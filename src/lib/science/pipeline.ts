@@ -1,0 +1,379 @@
+/**
+ * Pipeline orchestrator — stages A through E.
+ *
+ *   A  input validation           (validation.ts)
+ *   B  preprocessing              reference-area offset, optional detrend,
+ *                                  coherence masking
+ *   C  change measurement         phase -> LOS displacement, summary metrics
+ *                                  (detection.ts)
+ *   D  uncertainty                coherence-based sigma + reference scatter
+ *                                  (uncertainty.ts)
+ *   E  cause investigation        rule-based attribution with independent
+ *                                  USGS evidence (attribution.ts)
+ *
+ * The pipeline is pure with respect to external services: USGS events are
+ * passed in by the caller (the API layer), so the science core stays
+ * deterministic and unit-testable.
+ */
+
+import type {
+  AnalysisParams,
+  AnalysisResult,
+  ChangeSummary,
+  ScienceDataset,
+  TransportGrid,
+  UsgsEventLite,
+} from './types';
+import { DEFAULT_PARAMS } from './types';
+import { validateDataset } from './validation';
+import { phaseGridToDisplacement } from './phase';
+import { combinedSigmaM } from './uncertainty';
+import { runDetection } from './detection';
+import { evaluateAttribution, forwardModelCheck } from './attribution';
+import { median, madSigma, planarFit } from './statistics';
+
+/** Base64-encode a typed array (little-endian, platform-checked). */
+function b64(arr: Float32Array | Uint8Array): string {
+  const u8 = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  return Buffer.from(u8).toString('base64');
+}
+
+/** Area-average downsample keeping NaN when no valid contributor exists. */
+function downsample(src: Float32Array, w: number, h: number, factor: number): { data: Float32Array; w: number; h: number } {
+  if (factor <= 1) return { data: src, w, h };
+  const nw = Math.ceil(w / factor);
+  const nh = Math.ceil(h / factor);
+  const out = new Float32Array(nw * nh);
+  for (let i = 0; i < nh; i++) {
+    for (let j = 0; j < nw; j++) {
+      let sum = 0;
+      let cnt = 0;
+      for (let di = 0; di < factor; di++) {
+        for (let dj = 0; dj < factor; dj++) {
+          const si = i * factor + di;
+          const sj = j * factor + dj;
+          if (si >= h || sj >= w) continue;
+          const v = src[si * w + sj];
+          if (!Number.isNaN(v)) {
+            sum += v;
+            cnt++;
+          }
+        }
+      }
+      out[i * nw + j] = cnt ? sum / cnt : NaN;
+    }
+  }
+  return { data: out, w: nw, h: nh };
+}
+
+function downsampleMask(src: Uint8Array, w: number, h: number, factor: number): { data: Uint8Array; w: number; h: number } {
+  if (factor <= 1) return { data: src, w, h };
+  const nw = Math.ceil(w / factor);
+  const nh = Math.ceil(h / factor);
+  const out = new Uint8Array(nw * nh);
+  for (let i = 0; i < nh; i++) {
+    for (let j = 0; j < nw; j++) {
+      let cnt = 0;
+      let tot = 0;
+      for (let di = 0; di < factor; di++) {
+        for (let dj = 0; dj < factor; dj++) {
+          const si = i * factor + di;
+          const sj = j * factor + dj;
+          if (si >= h || sj >= w) continue;
+          tot++;
+          if (src[si * w + sj]) cnt++;
+        }
+      }
+      out[i * nw + j] = cnt / Math.max(tot, 1) > 0.5 ? 1 : 0;
+    }
+  }
+  return { data: out, w: nw, h: nh };
+}
+
+export function runPipeline(
+  ds: ScienceDataset,
+  paramsIn: Partial<AnalysisParams> | undefined,
+  usgsEvents: UsgsEventLite[] = [],
+): AnalysisResult {
+  const t0 = Date.now();
+  const params: AnalysisParams = { ...DEFAULT_PARAMS, ...(paramsIn || {}) };
+  const warnings: string[] = [];
+
+  // ---- Stage A: validation -------------------------------------------------
+  const validation = validateDataset(ds);
+  warnings.push(...validation.warnings);
+  if (!validation.ok) {
+    throw new Error(
+      `Stage A input validation failed: ${validation.errors.join('; ')}`,
+    );
+  }
+  if (ds.mode !== 'quantitative' || !ds.phase || !ds.coherence) {
+    throw new Error('Dataset does not provide the quantitative layers required by the pipeline');
+  }
+
+  const meta = ds.phase.meta;
+  const w = meta.width;
+  const h = meta.height;
+  const n = w * h;
+
+  // ---- Stage B: quality mask + referencing --------------------------------
+  const mask = new Uint8Array(n);
+  const coh = ds.coherence.data;
+  const phase = ds.phase.data;
+  let validCount = 0;
+  for (let idx = 0; idx < n; idx++) {
+    const c = coh[idx];
+    if (!Number.isNaN(phase[idx]) && !Number.isNaN(c) && c >= params.coherenceThreshold) {
+      mask[idx] = 1;
+      validCount++;
+    }
+  }
+  if (validCount < 100) {
+    throw new Error(
+      `Stage B: only ${validCount} pixels pass the coherence threshold ${params.coherenceThreshold}; ` +
+        'the analysis would be meaningless. Lower the threshold or choose another pair.',
+    );
+  }
+
+  // Reference region: frame margin band (far field) or full frame.
+  const marginRows = Math.max(2, Math.round(params.farFieldMargin * h));
+  const marginCols = Math.max(2, Math.round(params.farFieldMargin * w));
+  const isRef = new Uint8Array(n);
+  let refCount = 0;
+  if (params.referenceStrategy === 'farField') {
+    for (let i = 0; i < h; i++) {
+      for (let j = 0; j < w; j++) {
+        const idx = i * w + j;
+        if (!mask[idx]) continue;
+        if (i < marginRows || i >= h - marginRows || j < marginCols || j >= w - marginCols) {
+          isRef[idx] = 1;
+          refCount++;
+        }
+      }
+    }
+  } else {
+    for (let idx = 0; idx < n; idx++) {
+      if (mask[idx]) {
+        isRef[idx] = 1;
+        refCount++;
+      }
+    }
+  }
+  if (refCount < 50) {
+    warnings.push(
+      'Reference region is very small; the far-field assumption may be violated by a large anomaly.',
+    );
+    for (let idx = 0; idx < n; idx++) if (mask[idx]) { isRef[idx] = 1; refCount++; }
+  }
+
+  // ---- Stage C: measurement -------------------------------------------------
+  // Raw displacement (NISAR convention: d = lambda*phi/(4pi)).
+  const rawDisp = phaseGridToDisplacement(phase, ds.geometry.wavelength);
+
+  // Reference offset: median over the reference region.
+  const refValues: number[] = [];
+  for (let idx = 0; idx < n; idx++) {
+    if (isRef[idx]) refValues.push(rawDisp[idx]);
+  }
+  const refOffset = median(refValues);
+  const refSigma = madSigma(refValues);
+  if (Number.isNaN(refOffset)) {
+    throw new Error('Stage C: reference offset could not be computed (empty reference region).');
+  }
+
+  let disp = new Float32Array(n);
+  for (let idx = 0; idx < n; idx++) {
+    disp[idx] = mask[idx] ? rawDisp[idx] - refOffset : NaN;
+  }
+
+  // Optional planar detrend over the reference region (advanced, default off).
+  if (params.detrend) {
+    const pts: Array<{ i: number; j: number; v: number }> = [];
+    for (let idx = 0; idx < n; idx++) {
+      if (isRef[idx] && !Number.isNaN(disp[idx])) {
+        pts.push({ i: Math.floor(idx / w), j: idx % w, v: disp[idx] });
+      }
+    }
+    const fit = planarFit(pts);
+    if (fit) {
+      for (let idx = 0; idx < n; idx++) {
+        if (mask[idx]) {
+          const i = Math.floor(idx / w);
+          const j = idx % w;
+          disp[idx] -= fit.a * i + fit.b * j + fit.c;
+        }
+      }
+      warnings.push(
+        'Planar detrend applied over the reference region; note that a plane can also absorb ' +
+          'real long-wavelength deformation.',
+      );
+    } else {
+      warnings.push('Planar fit was degenerate; detrend skipped.');
+    }
+  }
+
+  // ---- Stage D: uncertainty ---------------------------------------------------
+  const sigma = new Float32Array(n);
+  for (let idx = 0; idx < n; idx++) {
+    if (!mask[idx]) {
+      sigma[idx] = NaN;
+      continue;
+    }
+    sigma[idx] = combinedSigmaM(
+      coh[idx],
+      ds.numberOfLooks,
+      ds.geometry.wavelength,
+      refSigma,
+      ds.ionoScreenSigmaRad,
+    );
+  }
+
+  // ---- Detection summary -------------------------------------------------------
+  // The ionospheric screen uncertainty is a SPATIALLY CORRELATED systematic
+  // (the error of the already-applied correction), so it is NOT added to the
+  // per-pixel sigma; instead it raises the physical detection floor: change
+  // is only declared significant above the product's own systematic budget.
+  const ionoFloorM = ds.ionoScreenSigmaRad
+    ? (ds.geometry.wavelength * ds.ionoScreenSigmaRad) / (4 * Math.PI)
+    : 0;
+  const effectiveFloorM = Math.max(params.detectionFloor, ionoFloorM);
+  const det = runDetection(
+    {
+      meta,
+      displacement: disp,
+      sigma,
+      mask,
+      k: params.significanceK,
+      floorM: effectiveFloorM,
+    },
+    coh,
+  );
+
+  // Connected-component statistics.
+  let ccCount = 0;
+  if (ds.components) {
+    const compSizes = new Map<number, number>();
+    for (let idx = 0; idx < n; idx++) {
+      if (mask[idx] && ds.components[idx] !== 65535) {
+        const c = ds.components[idx];
+        compSizes.set(c, (compSizes.get(c) || 0) + 1);
+      }
+    }
+    for (const [, size] of compSizes) {
+      if (size >= validCount * 0.01) ccCount++;
+    }
+  } else {
+    ccCount = 1;
+  }
+
+  const summary: ChangeSummary = {
+    ...det.stats,
+    referenceOffsetM: refOffset,
+    referenceSigmaM: refSigma,
+    connectedComponentCount: ccCount,
+    systematicIonoFloorM: ionoFloorM,
+  };
+
+  // ---- Stage E: attribution ------------------------------------------------------
+  const fm = forwardModelCheck(ds, usgsEvents[0], disp, mask);
+  const attribution = evaluateAttribution(ds, summary, usgsEvents, fm);
+
+  // ---- Validation against ground truth (synthetic fixtures) ---------------------
+  let validationBlock: AnalysisResult['validation'] | undefined;
+  if (ds.truth) {
+    let mae = 0;
+    let rmse = 0;
+    let bias = 0;
+    let cnt = 0;
+    const truth = ds.truth.data;
+    // Compare on a sparse sample for speed; deterministic stride.
+    const stride = Math.max(1, Math.floor(n / 50000));
+    for (let idx = 0; idx < n; idx += stride) {
+      if (!mask[idx] || Number.isNaN(truth[idx])) continue;
+      const e = disp[idx] - truth[idx];
+      mae += Math.abs(e);
+      rmse += e * e;
+      bias += e;
+      cnt++;
+    }
+    if (cnt > 0) {
+      validationBlock = {
+        maeM: mae / cnt,
+        rmseM: Math.sqrt(rmse / cnt),
+        biasM: bias / cnt,
+        n: cnt,
+        note:
+          'Comparison of the pipeline output against the analytic Okada ground truth over all valid ' +
+          'pixels (synthetic fixture). This validates the processing mathematics, NOT any claim about ' +
+          'the real Earth.',
+      };
+    }
+  }
+
+  // ---- Narrative -----------------------------------------------------------------
+  const mm = (v: number) => (v * 1000).toFixed(1);
+  const effectiveFloorMm = Math.max(params.detectionFloor, ionoFloorM) * 1000;
+  const whatChanged =
+    summary.affectedAreaKm2 <= 0
+      ? `No ground motion above the detection threshold (${effectiveFloorMm.toFixed(0)} mm for this product) was found in this ${ds.provenance.temporalBaselineDays}-day radar pair. The surface appears stable at the level this measurement can resolve.`
+      : `The radar measurement shows ground motion between ${ds.provenance.referenceTime.slice(0, 10)} and ${ds.provenance.secondaryTime.slice(0, 10)}: an area of about ${summary.affectedAreaKm2.toFixed(0)} km² moved by more than the detection threshold, ${ds.isSynthetic ? '(synthetic validation fixture)' : 'measured along the satellite line of sight'}.`;
+  const howMuch =
+    summary.affectedAreaKm2 <= 0
+      ? `Upper bound on motion: less than ${mm(Math.max(effectiveFloorM, 3 * summary.referenceSigmaM))} mm anywhere in the analysed area.`
+      : `Peak motion: ${mm(summary.maxAwayM)} mm away from the radar and ${mm(summary.maxTowardM)} mm toward it. Typical per-pixel measurement uncertainty is ±${mm(summary.medianSigmaM)} mm (one sigma), so the peaks are ${(
+          Math.max(Math.abs(summary.maxAwayM), Math.abs(summary.maxTowardM)) /
+          Math.max(summary.medianSigmaM, 1e-9)
+        ).toFixed(0)}× the per-pixel noise.`;
+  const reliability =
+    `${(summary.validFraction * 100).toFixed(0)}% of the frame retained sufficient coherence for measurement ` +
+    `(median coherence ${summary.coherenceMedian.toFixed(2)}). The reference-region scatter is ±${mm(summary.referenceSigmaM)} mm ` +
+    `and dominates unmodelled residuals such as atmosphere. ${ccCount > 1 ? `Phase unwrapping split the scene into ${ccCount} regions — treat step-like boundaries with caution.` : 'Phase unwrapping is consistent across the scene.'} ` +
+    (ionoFloorM > 0
+      ? `The product's ionospheric correction carries a systematic uncertainty of about ±${mm(ionoFloorM)} mm at screen spatial scales, so smaller long-wavelength signals cannot be confidently attributed to ground motion from this single pair. `
+      : '') +
+    'A single interferogram cannot separate slow processes from one-off events.';
+
+  // ---- Transport grid ------------------------------------------------------------
+  const maxSide = 640;
+  const factor = Math.max(1, Math.ceil(Math.max(w, h) / maxSide));
+  const td = downsample(disp, w, h, factor);
+  const tc = downsample(coh, w, h, factor);
+  const tmaskSrc = new Uint8Array(n);
+  for (let idx = 0; idx < n; idx++) tmaskSrc[idx] = mask[idx];
+  const tm = downsampleMask(tmaskSrc, w, h, factor);
+  const ts = downsample(sigma, w, h, factor);
+  // Enforce mask on downsampled displacement.
+  for (let idx = 0; idx < td.data.length; idx++) {
+    if (!tm.data[idx]) {
+      td.data[idx] = NaN;
+      ts.data[idx] = NaN;
+    }
+  }
+  const transport: TransportGrid = {
+    width: td.w,
+    height: td.h,
+    displacement: b64(td.data),
+    coherence: b64(tc.data),
+    mask: b64(tm.data),
+    sigma: b64(ts.data),
+    meta: {
+      ...meta,
+      width: td.w,
+      height: td.h,
+      xSpacing: meta.xSpacing * factor,
+      ySpacing: meta.ySpacing * factor,
+    },
+  };
+
+  return {
+    datasetId: ds.id,
+    params,
+    summary,
+    narrative: { whatChanged, howMuch, reliability },
+    attribution,
+    transport,
+    validation: validationBlock,
+    warnings,
+    processingMs: Date.now() - t0,
+  };
+}

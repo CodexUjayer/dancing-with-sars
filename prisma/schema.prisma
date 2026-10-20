@@ -1,0 +1,47 @@
+// Prisma schema — analysis run history and the reference registry.
+// The heavy science layers (rasters) live on the filesystem in data/derived;
+// the database stores run metadata, parameters and summaries for
+// reproducibility and audit.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// One persisted pipeline run (result grids are recomputable from the
+/// dataset + parameters, so only the summary is stored).
+model AnalysisRun {
+  id         String   @id @default(cuid())
+  datasetId  String
+  status     String // "ok" | "error"
+  paramsJson String // JSON-encoded AnalysisParams
+  summaryJson String? // JSON-encoded ChangeSummary
+  error      String?
+  createdAt  DateTime @default(now())
+  durationMs Int?
+
+  @@index([datasetId, createdAt])
+}
+
+/// Scientific reference registry (mirrors src/lib/data/references.ts,
+/// seeded on first request; the filesystem source remains authoritative).
+model Reference {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  title     String
+  authors   String
+  year      Int
+  venue     String
+  url       String
+  doi       String?
+  type      String
+  supportsJson String
+  note      String?
+  checkedAt String
+
+  createdAt DateTime @default(now())
+}

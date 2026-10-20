@@ -1,0 +1,21 @@
+{
+ "id": "us6000u18k",
+ "magnitude": 7.7,
+ "magType": "mww",
+ "place": "12 km WSW of Pitaloza Arriba, Panama",
+ "time": "2026-10-09T17:56:06.036000+00:00",
+ "lat": 7.5868,
+ "lon": -80.769,
+ "depthKm": 12.647,
+ "url": "https://earthquake.usgs.gov/earthquakes/eventpage/us6000u18k",
+ "nodalPlane": {
+  "strike": "25.21",
+  "dip": "74.77",
+  "rake": "-155.3"
+ },
+ "scalarMomentNM": 3.77e+20,
+ "momentTensorSource": "us/us_6000u18k_mww",
+ "alert": "orange",
+ "tsunami": 0,
+ "significance": 1790
+}
