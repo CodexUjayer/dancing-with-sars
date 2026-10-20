@@ -355,37 +355,35 @@ export function forwardModelCheck(
   const cx = meta.xStart + ((meta.width - 1) / 2) * meta.xSpacing;
   const cy = meta.yStart + ((meta.height - 1) / 2) * meta.ySpacing;
 
+  // Evaluate on a deterministic strided subgrid: the Okada field is smooth at
+  // grid scale, so a subgrid carries the same amplitude/pattern information
+  // while keeping the consistency screen cheap on large NISAR frames
+  // (full frames reach ~2e7 pixels). Peaks are computed with explicit loops
+  // (never argument spreads, which overflow on large arrays).
   const n = meta.width * meta.height;
-  const pred = new Float32Array(n);
+  const stride = Math.max(1, Math.floor(n / 400000));
   const meas: number[] = [];
   const prd: number[] = [];
   let predPeak = 0;
+  let measuredPeak = 0;
 
-  for (let idx = 0; idx < n; idx++) {
+  for (let idx = 0; idx < n; idx += stride) {
     const i = Math.floor(idx / meta.width);
     const j = idx % meta.width;
     const x = meta.xStart + j * meta.xSpacing - cx;
     const y = meta.yStart + i * meta.ySpacing - cy;
     const d = geoFaultDisplacementENU(fault, centroidDepth, x, y);
-    if (d.singular) {
-      pred[idx] = NaN;
-      continue;
-    }
+    if (d.singular) continue;
     const losM = projectDisplacementToLOS(d, los);
-    pred[idx] = losM;
     if (Math.abs(losM) > Math.abs(predPeak)) predPeak = losM;
     if (mask && !mask[idx]) continue;
-    if (!Number.isNaN(displacement[idx])) {
-      meas.push(displacement[idx]);
+    const dv = displacement[idx];
+    if (!Number.isNaN(dv)) {
+      meas.push(dv);
       prd.push(losM);
+      if (Math.abs(dv) > measuredPeak) measuredPeak = Math.abs(dv);
     }
   }
-
-  const measuredPeak = Math.max(
-    ...Array.from({ length: Math.min(displacement.length, n) }, (_, i) =>
-      mask && !mask[i] ? 0 : Math.abs(Number.isNaN(displacement[i]) ? 0 : displacement[i]),
-    ),
-  );
 
   const amplitudeRatio =
     Math.abs(predPeak) > 1e-9 ? measuredPeak / Math.abs(predPeak) : NaN;
@@ -400,7 +398,8 @@ export function forwardModelCheck(
     note:
       'Predicted field uses a uniform-slip rectangular dislocation with the published nodal plane; ' +
       'fault dimensions follow empirical magnitude-area scaling with substantial scatter, so only ' +
-      'order-of-magnitude amplitude agreement is meaningful.',
+      'order-of-magnitude amplitude agreement is meaningful. Evaluated on a deterministic subgrid ' +
+      `of about ${Math.floor(n / stride)} points (the model field is smooth at grid scale).`,
   };
 }
 

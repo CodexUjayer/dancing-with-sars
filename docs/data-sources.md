@@ -31,7 +31,55 @@ The application uses CMR for the availability panel and the
 `timeStart < eventTime < timeEnd`). Live queries are proxied through
 `/api/external/cmr` with timeouts and explicit error surfacing.
 
-## 2. NISAR sample GUNW product (quantitatively analysed)
+## 2. NISAR operational GUNW granule — Mojave 2026 (quantitatively analysed)
+
+A genuine product of the operational NISAR mission, downloaded with an
+authenticated NASA Earthdata account and analysed end-to-end:
+
+| Field | Value |
+|---|---|
+| Granule | `NISAR_L2_PR_GUNW_021_013_D_071_022_4000_SH_20260522T024038_20260522T024116_20260603T024038_20260603T024115_P05023_N_F_J_001` |
+| Source | `https://nisar.asf.earthdatacloud.nasa.gov/NISAR/NISAR_L2_GUNW_PROVISIONAL_V1/…` (ASF Earthdata cloud; bearer-token download, see §9) |
+| Local copy | `data/raw/…h5` (2,575,302,656 bytes; parallel ranged download, ~2 min) |
+| Collection | NISAR_L2_GUNW_PROVISIONAL_V1 (operational provisional) · DOI 10.5067/NIL2GUNW-P1 |
+| Scene | Southern Sierra Nevada / Owens Valley / Death Valley / Mojave Desert; track 13, frame 71, **descending, left-looking**; centre ≈ 34.64°N 117.70°W |
+| Pair | Reference 2026-05-22 02:40:38 UTC → Secondary 2026-06-03 02:40:38 UTC (**12 days**, NISAR repeat cycle) |
+| Grid | 4401 × 4338, EPSG:32611 (WGS84 / UTM 11N), 80 m posting (~352 × 347 km) |
+| Radar | λ = 0.2419632 m (centre frequency 1.239 GHz), incidence 41.05°, heading 198.5° (derived from the product's own LOS unit vectors), 16×13 = 208 looks |
+| Processing | NISAR SDS **v0.25.16** (2026-08-10), product spec **v1.5.0**; SNAPHU unwrapping; topographic + ellipsoidal flattening, range + azimuth ionospheric, hydrostatic + wet tropospheric corrections all applied (flags read from the product) |
+| L1 inputs | real NISAR L1 PR RSLC granules `…_021_013_D_071_4005_DHDH_A_20260522…` / `…_022_013_D_071_4005_DHDH_A_20260603…` (recorded in provenance) |
+| DEM | Copernicus DEM 30 m (2023_1), NISAR DEM v1.2 |
+
+**What the data shows (measured, not assumed).** This pair was acquired
+through a severely disturbed ionosphere:
+
+- the product's own ionospheric phase screens reach **tens of radians**
+  (screen std ≈ 36 rad; correction-uncertainty median 3.73 rad ≈ 72 mm LOS);
+- **coherence collapsed scene-wide** (median 0.08 uniformly across nine
+  regions of the frame; only 12.3% of pixels ≥ 0.1, 0.3% ≥ 0.2);
+- the stored phase over non-unwrapped (connected-component 0) areas is a
+  noise-filled field (std ≈ 5 rad) — the pipeline's Stage B now gates on
+  the unwrapping component labels (see docs/methodology.md);
+- the single valid unwrapping component (324,103 px ≈ 2,074 km², 99.7%
+  exact-zero phase) is a genuinely stable surface: **max |LOS displacement|
+  48 mm < the 72 mm ionospheric systematic floor** → no detection, honestly
+  reported.
+
+A **M4.06 earthquake** occurred inside the frame between the acquisitions
+(18 km WSW of Johannesburg, CA, 2026-06-01 22:34 UTC, 7.6 km depth — USGS
+`us7000u18k`-series query, matched live by the attribution layer). Its
+expected deformation is mm-to-cm scale, below this pair's measurement
+floor; the coseismic hypothesis is correctly reported as *insufficient
+evidence*, not as a cause.
+
+**Dataset-suggested starting parameters:** coherence threshold 0.1
+(the global 0.5 default would reject the scene at Stage B; the suggestion
+is visible and adjustable in the UI, with the reasoning in these notes).
+
+Extraction is the same lossless `tools/extract_gunw.py` path as §3;
+derived layers live in `data/derived/nisar-mojave-2026/`.
+
+## 3. NISAR sample GUNW product (quantitatively analysed)
 
 The openly distributed NISAR sample product analysed end-to-end:
 
@@ -58,7 +106,7 @@ identification, processing flags, statistics). The derived dataset lives in
 `data/derived/nisar-la-2008/`. All scientific interpretation happens in the
 TypeScript pipeline; the extractor performs no science.
 
-## 3. Panama M7.7 earthquake evidence (2026)
+## 4. Panama M7.7 earthquake evidence (2026)
 
 | Field | Value |
 |---|---|
@@ -78,7 +126,7 @@ hold — so MOTUS presents the real availability, official imagery and a
 labelled Okada forward model, and explicitly does not present a measured
 displacement field for this event.
 
-## 4. USGS ComCat (FDSN) earthquake catalog
+## 5. USGS ComCat (FDSN) earthquake catalog
 
 | Field | Value |
 |---|---|
@@ -93,7 +141,7 @@ property. Events are attributed to an analysis only when their origin time
 falls strictly inside the acquisition window (reference → secondary) and
 within 400 km of the dataset centre.
 
-## 5. Synthetic validation fixtures
+## 6. Synthetic validation fixtures
 
 Generated in-process by `src/lib/science/fixtures.ts` from the Okada85
 forward model with an explicit observation-simulation chain (LOS projection
@@ -104,7 +152,7 @@ seeds). Three fixtures: dextral strike-slip (seed 20261009), thrust
 synthetic` in provenance, badged in the UI, and excluded from any claim
 about the real Earth.
 
-## 6. Map tiles
+## 7. Map tiles
 
 Base map tiles: Esri World_Topo via the ArcGIS Online tile service
 (keyless, clean at time of verification). CARTO basemaps were rejected
@@ -112,7 +160,7 @@ during development because they now serve "API KEY REQUIRED" watermarked
 tiles without a key; this was caught by visual inspection of the rendered
 map, not assumed.
 
-## 7. Provenance model
+## 8. Provenance model
 
 Every dataset loaded by the registry produces a `ProvenanceRecord`:
 
@@ -130,10 +178,26 @@ flags are copied verbatim from the product metadata (corrections applied,
 no-data fractions, multilooking). Run-level provenance (parameters,
 summaries, durations) is persisted in the `AnalysisRun` table for audit.
 
-## 8. Access policy and credentials
+## 9. Access policy and credentials
 
-No credentials exist in this repository. The documented path for
-authenticated NISAR HDF5 ingestion is the `EARTHDATA_BEARER_TOKEN`
-environment variable (see `.env.example`); the adapter is not exercised in
-this deployment and the UI states that evidence mode is a fallback for
-exactly this reason.
+The granule of §2 was downloaded with a real Earthdata bearer token
+(uid `ujayer`) on 2026-10-20. Verified auth flow against the live service:
+
+1. `GET …/<granule>.h5` with `Authorization: Bearer <token>` → **303** to a
+   short-lived (~3 h) presigned CloudFront/S3 URL (an `asf-urs` session
+   cookie is also set);
+2. the presigned URL must be fetched **without** the Authorization header
+   (S3 rejects dual auth mechanisms);
+3. observed: the bearer token succeeded for exactly one presign exchange —
+   subsequent attempts returned `401 invalid_token`; the presigned URL and
+   session cookie remained valid. Treat the token as single-use for
+   presigning and keep the URL/cookie for the actual transfer;
+4. the 2.58 GB file was downloaded as 12 parallel HTTP-range parts
+   (`tools/parallel_fetch.sh`, ~19 MB/s, ~2 min 16 s) — a single stream
+   throttles to ~2 MB/s.
+
+Browse PNGs (`<granule>_LATLON.png`) were anonymously accessible earlier
+on 2026-10-20 but now redirect to Earthdata Login — treat browse access as
+authenticated. No credentials exist in this repository: the token lives in
+`.env` (git-ignored) and `.env.example` documents the variable.
+`tools/fetch_nisar_granule.py` implements the documented flow.

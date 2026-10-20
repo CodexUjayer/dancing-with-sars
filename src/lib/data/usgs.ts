@@ -105,15 +105,13 @@ export async function queryUsgsEvents(opts: UsgsQueryOptions): Promise<UsgsEvent
     eventtype: 'earthquake',
   });
   if (opts.boundingBox) {
-    params.set(
-      'boundingbox',
-      [
-        opts.boundingBox[1],
-        opts.boundingBox[3],
-        opts.boundingBox[0],
-        opts.boundingBox[2],
-      ].join(','), // minlat,maxlat,minlon,maxlon per FDSN spec
-    );
+    // FDSN event-service parameters (verified 2026-10-20): the service has no
+    // combined "boundingbox" query parameter — it requires the four explicit
+    // bounds below; anything else yields HTTP 400.
+    params.set('minlatitude', String(opts.boundingBox[1]));
+    params.set('maxlatitude', String(opts.boundingBox[3]));
+    params.set('minlongitude', String(opts.boundingBox[0]));
+    params.set('maxlongitude', String(opts.boundingBox[2]));
   }
   const url = `${FDSN_BASE}/query?${params.toString()}`;
 

@@ -98,7 +98,9 @@ neighbour). The rendered image is then placed as an `L.imageOverlay`
 rectangle — exact by construction; grid-zone edges are masked, not
 distorted. Displacement is coloured with a symmetric terracotta↔teal
 divergent scale; a legend, hover value readout, opacity control and layer
-switcher (displacement / coherence / uncertainty) complete the map.
+switcher (displacement / coherence / uncertainty / coverage — the coverage
+layer shows the valid-measurement mask as a flat tone, which is the honest
+view for scenes whose displacement is ~zero) complete the map.
 
 ## Performance (measured on the dev machine, 4 GB RAM)
 
@@ -106,12 +108,30 @@ switcher (displacement / coherence / uncertainty) complete the map.
 |---|---|
 | Synthetic fixture pipeline run | 65–90 ms |
 | Real LA sample (1.77 M pixels, full stages A–E) | ~360 ms |
-| Transport grid + base64 (~1 MB JSON) | included above |
+| Real Mojave 2026 operational granule (19.1 M pixels, stages A–E) | ~1.5 s + USGS |
+| 2.58 GB granule download (12 parallel range parts) | 2 min 16 s |
+| Transport grid + base64 (~6.8 MB JSON for the Mojave frame) | included above |
 | Okada forward model, 400×400 grid | < 100 ms |
+| Okada forward-model consistency screen (strided ≤400k subgrid) | 1–3 s |
 | Test suite (42 tests) | ~1.2 s |
 
 USGS live queries dominate wall-clock time for real-dataset analyses
 (15–25 s); the UI shows an elapsed timer and explains the wait.
+
+**Memory discipline on a 4 GB host** (all learned from real OOM kills):
+
+- The raw 2.58 GB granule and all derived products live in `data/`
+  (git-ignored). Tailwind 4's automatic content scanner respects
+  `.gitignore` — before `/data/` was ignored, the scanner tried to read the
+  2.58 GB HDF5 during the CSS build and the OOM killer took down the dev
+  server (postcss worker died mid-IPC → Turbopack panic). `globals.css`
+  additionally pins `@source not "../data"` / `@source not "../tools"` as
+  belt-and-braces.
+- The analysis result cache is bounded (10 entries; each holds ~10 MB of
+  transport rasters) with oldest-first eviction.
+- Dataset rasters (~190 MB for the Mojave frame + smaller sets) are loaded
+  lazily per request and cached per server process; the page compiles
+  before any dataset is loaded in normal usage.
 
 ## Reproducibility
 

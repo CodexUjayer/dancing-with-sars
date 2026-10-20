@@ -97,7 +97,9 @@ export default function Home() {
       .catch(() => setDatasets([]));
   }, []);
 
-  // Load dataset detail on selection.
+  // Load dataset detail on selection; adopt the dataset's suggested starting
+  // parameters (e.g. a decorrelated ionosphere-dominated pair suggests a lower
+  // coherence threshold — every value stays user-adjustable under Advanced).
   useEffect(() => {
     if (!selectedId) return;
     setResult(null);
@@ -107,6 +109,11 @@ export default function Home() {
     setGranulePolys([]);
     setDetail(null);
     setLayer('displacement');
+    const suggestedCoh = datasets?.find((d) => d.id === selectedId)?.suggestedParams?.coherenceThreshold;
+    setAdvanced((a) => ({
+      ...a,
+      coherenceThreshold: suggestedCoh ?? DEFAULT_ADVANCED.coherenceThreshold,
+    }));
     fetch(`/api/datasets/${selectedId}`)
       .then((r) => r.json())
       .then((d: { ok: boolean; dataset?: DatasetDetail; event?: unknown; granules?: PanamaGranule[] }) => {
@@ -117,7 +124,7 @@ export default function Home() {
         }
       })
       .catch((e) => setError((e as Error).message));
-  }, [selectedId]);
+  }, [selectedId, datasets]);
 
   const runAnalysis = useCallback(async () => {
     if (!selectedId || running) return;
@@ -285,7 +292,7 @@ export default function Home() {
             {grids && detail && (
               <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-[#E7E2DA] bg-white px-3.5 py-2.5">
                 <div role="tablist" aria-label="Map layer" className="flex overflow-hidden rounded-md border border-[#E7E2DA]">
-                  {(['displacement', 'coherence', 'sigma'] as LayerKind[]).map((l) => (
+                  {(['displacement', 'coherence', 'sigma', 'coverage'] as LayerKind[]).map((l) => (
                     <button
                       key={l}
                       role="tab"
@@ -295,7 +302,7 @@ export default function Home() {
                         layer === l ? 'bg-[#1C1A17] text-white' : 'bg-white text-[#6F6862] hover:bg-[#F7F4EE]'
                       }`}
                     >
-                      {l === 'displacement' ? (isEvidenceResult(result ?? {} as never) && (result as { kind?: string })?.kind === 'evidence' ? 'Model prediction' : 'Displacement') : l === 'coherence' ? 'Coherence' : 'Uncertainty'}
+                      {l === 'displacement' ? (isEvidenceResult(result ?? {} as never) && (result as { kind?: string })?.kind === 'evidence' ? 'Model prediction' : 'Displacement') : l === 'coherence' ? 'Coherence' : l === 'sigma' ? 'Uncertainty' : 'Coverage'}
                     </button>
                   ))}
                 </div>
@@ -399,12 +406,21 @@ export default function Home() {
                         </div>
                         <Slider
                           value={[advanced.coherenceThreshold]}
-                          min={0.2}
+                          min={0.05}
                           max={0.9}
                           step={0.05}
                           onValueChange={(v) => setAdvanced((a) => ({ ...a, coherenceThreshold: v[0] }))}
                           aria-label="Coherence threshold"
                         />
+                        {(() => {
+                          const sugg = selectedEntry?.suggestedParams?.coherenceThreshold;
+                          if (sugg === undefined || Math.abs(sugg - advanced.coherenceThreshold) < 1e-9) return null;
+                          return (
+                            <p className="mt-1.5 text-[10.5px] leading-3 text-[#8A837B]">
+                              Suggested starting value for this scene: {sugg.toFixed(2)} — the dataset notes explain why.
+                            </p>
+                          );
+                        })()}
                       </div>
                       <div className="flex items-center justify-between gap-3">
                         <MicroLabel>Detection floor</MicroLabel>
@@ -467,7 +483,11 @@ export default function Home() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setAdvanced(DEFAULT_ADVANCED)}
+                        onClick={() => setAdvanced({
+                          ...DEFAULT_ADVANCED,
+                          coherenceThreshold:
+                            selectedEntry?.suggestedParams?.coherenceThreshold ?? DEFAULT_ADVANCED.coherenceThreshold,
+                        })}
                         className="h-7 gap-1.5 px-2 text-[11px] font-normal text-[#8A837B] hover:text-[#1C1A17]"
                       >
                         <RotateCcw className="h-3 w-3" aria-hidden /> Reset to defaults

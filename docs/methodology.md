@@ -23,8 +23,18 @@ without access notes.
 ## Stage B — preprocessing and referencing
 
 1. **Quality mask:** a pixel is measurable only where phase and coherence
-   are finite and coherence ≥ threshold (default 0.5). Fewer than 100
-   surviving pixels aborts the run with a clear error.
+   are finite, coherence ≥ threshold (default 0.5; scene-adapted starting
+   values may be suggested by the dataset registry — e.g. 0.1 for the
+   ionosphere-destroyed Mojave pair — and remain user-adjustable), **and**
+   the pixel belongs to a validated unwrapping connected component
+   (component ≥ 1; 0 and the 65535 fill value are excluded). The component
+   gate matters because GUNW products store finite, meaningless phase over
+   non-unwrapped areas: the Mojave 2026 granule carries a ~5-rad noise field
+   over its cc = 0 regions which — before this gate existed — produced a
+   5,923 km² false detection from a scene whose genuinely unwrapped surface
+   is stable to < 48 mm. When more than half of the coherence-passing
+   pixels are excluded by the gate, a warning says so explicitly. Fewer
+   than 100 surviving pixels aborts the run with a clear error.
 2. **Reference region:**
    - far-field strategy (default): the outer 12% margin band of the frame;
    - full-frame median: all valid pixels.
@@ -34,7 +44,12 @@ without access notes.
 3. **Offset removal:** the median displacement over the reference region is
    subtracted from all valid pixels. (Median, not mean: 50% breakdown point
    against unwrapping outliers.)
-4. **Optional planar detrend (default off):** a least-squares plane fitted
+4. **Reference scatter:** the MAD-based σ of the reference region feeds the
+   per-pixel uncertainty. If the MAD is degenerate — more than half of the
+   reference pixels share one exact value, as when SNAPHU emits exact zeros
+   over a flat, fully coherent basin — the standard deviation is used
+   instead and a warning explains the fallback.
+5. **Optional planar detrend (default off):** a least-squares plane fitted
    over the reference region may be removed, with the standing caveat that
    a plane can absorb real long-wavelength deformation. The caveat is
    surfaced in the UI and in a pipeline warning when applied.
@@ -43,7 +58,7 @@ Upstream processing (orbit, coregistration, topographic/ellipsoidal
 flattening, ionospheric and tropospheric corrections, SNAPHU unwrapping,
 geocoding) is performed by the NISAR SDS before distribution; MOTUS reads
 the product's own flags documenting each correction and displays them,
-rather than reprocessing (see docs/data-sources.md §2).
+rather than reprocessing (see docs/data-sources.md §§2–3).
 
 ## Stage C — change measurement
 
@@ -89,7 +104,12 @@ per-pixel noise (docs/science.md §5.2).
    model is evaluated on the dataset grid (uniform slip; fault dimensions
    from Wells & Coppersmith 1994 area scaling with 2:1 aspect; moment from
    Hanks & Kanamori 1979; slip = M0/(μA)) and compared with the
-   measurement: amplitude ratio and Pearson pattern correlation.
+   measurement: amplitude ratio and Pearson pattern correlation. The
+   model field is evaluated on a deterministic strided subgrid of at most
+   ~400k points (the Okada field is smooth at grid scale; full NISAR
+   frames reach ~2×10⁷ pixels and need not be evaluated exhaustively),
+   and peaks are computed with explicit loops — never `Math.max(...arr)`
+   argument spreads, which overflow on large arrays.
 3. Hypotheses (coseismic, slow surface motion, atmospheric residual,
    unwrapping artefact, no-change) receive evidence-linked statuses; the
    thresholds (amplitude ratio within factor 3; r > 0.25) are documented as
@@ -117,13 +137,18 @@ image rectangle. Recolouring on layer/scale changes does not re-warp.
 
 Plain-language blocks are assembled from the measured numbers (templates in
 `pipeline.ts`): *What changed? How much? How reliable is this result?*
-Every quantity quoted in a sentence comes from the computed summary — no
+A credibility rule shared with the attribution layer gates the
+"ground motion" phrasing: an affected area below max(1 km², 4 pixels) is
+described as **isolated stray pixels** consistent with statistical noise,
+not as detected motion — the regime where a handful of tail pixels cross
+the threshold of a heavily decorrelated scene. Every quantity quoted in a
+sentence comes from the computed summary — no
 canned claims.
 
 ## Tooling
 
 - `tools/extract_gunw.py` — documented, lossless HDF5 → derived-layers
-  extractor with full metadata capture (see docs/data-sources.md §2).
+  extractor with full metadata capture (see docs/data-sources.md §§2–3).
 - `src/lib/science/fixtures.ts` — deterministic fixture generator chain:
   Okada truth → LOS projection → phase conversion → coherence-consistent
   noise → atmospheric ramp → decorrelation patches.

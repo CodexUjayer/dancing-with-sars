@@ -23,7 +23,7 @@ export interface GridGeo {
   lonMax: number;
 }
 
-export type LayerKind = 'displacement' | 'coherence' | 'sigma';
+export type LayerKind = 'displacement' | 'coherence' | 'sigma' | 'coverage';
 
 export interface RenderedOverlay {
   dataUrl: string;
@@ -76,19 +76,25 @@ export function renderOverlay(
   meta: { xStart: number; xSpacing: number; yStart: number; ySpacing: number; width: number; height: number; epsg: number },
   layer: LayerKind,
   vmaxM?: number,
-  maxCanvasPx = 760,
+  maxCanvasPx = 1024,
 ): RenderedOverlay | undefined {
   const geo = gridBounds(meta);
 
-  // Canvas size proportional to the Mercator aspect.
+  // Canvas size proportional to the Mercator aspect. NOTE: merc() returns
+  // radians-equivalent natural-log units, so the longitude span must be
+  // converted to radians before taking the ratio — mixing units squashed
+  // every canvas to a 57x-too-flat strip (760x64), which dense scenes
+  // survived visually but sparse valid masks (2% of a decorrelated scene)
+  // did not.
   const mercSpan = merc(geo.latMax) - merc(geo.latMin);
-  const lonSpan = geo.lonMax - geo.lonMin;
-  if (!(mercSpan > 0) || !(lonSpan > 0)) return undefined;
+  const lonSpanDeg = geo.lonMax - geo.lonMin;
+  const lonSpanRad = (lonSpanDeg * Math.PI) / 180;
+  if (!(mercSpan > 0) || !(lonSpanRad > 0)) return undefined;
   let W = maxCanvasPx;
-  let H = Math.round((mercSpan / lonSpan) * W);
+  let H = Math.round((mercSpan / lonSpanRad) * W);
   if (H > maxCanvasPx) {
     H = maxCanvasPx;
-    W = Math.round((lonSpan / mercSpan) * H);
+    W = Math.round((lonSpanRad / mercSpan) * H);
   }
   W = Math.max(64, W);
   H = Math.max(64, H);
@@ -133,7 +139,7 @@ export function renderOverlay(
   for (let py = 0; py < H; py++) {
     const lat = invMerc(mercMin + (1 - py / H) * mercSpan);
     for (let px = 0; px < W; px++) {
-      const lon = geo.lonMin + (px / W) * lonSpan;
+      const lon = geo.lonMin + (px / W) * lonSpanDeg;
       const utm = latLonToUtm(lat, lon);
       // Skip points outside the grid's UTM zone frame (grids never straddle
       // zones materially; edge artefacts are masked instead of distorted).
@@ -152,6 +158,16 @@ export function renderOverlay(
       const gi = i * w + j;
       if (!grids.mask[gi]) {
         img.data[idx + 3] = 0;
+        continue;
+      }
+      if (layer === 'coverage') {
+        // Flat neutral tone wherever a VALID measurement exists — shows the
+        // analysed footprint honestly for scenes whose displacement is ~zero
+        // (near-white on the diverging scale) or whose valid mask is sparse.
+        img.data[idx] = 148;
+        img.data[idx + 1] = 140;
+        img.data[idx + 2] = 129;
+        img.data[idx + 3] = 235;
         continue;
       }
       let css: string;

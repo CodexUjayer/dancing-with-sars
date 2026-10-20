@@ -75,6 +75,34 @@ ionospheric systematic floor 81 mm → **no detection above floor**. This is
 the scientifically correct outcome for a pair whose residual signal sits
 below its own systematic budget, and the application says exactly that.
 
+Real NISAR operational granule — Mojave, May–June 2026 (12-day pair
+through a disturbed ionosphere): 324,103 valid pixels (2% of a 4401 × 4338
+frame — the rest is either decorrelated or carries invalid non-unwrapped
+phase), analysed area 2,074 km², median coherence 0.14, reference scatter
+0.5 mm (MAD-degenerate → σ fallback, warned), ionospheric systematic floor
+71.8 mm, **max |LOS displacement| 48 mm → 0 km² detected**. The live USGS
+cross-match finds the real M4.06 earthquake inside the frame and window
+(2026-06-01, Johannesburg, CA) and the coseismic hypothesis is reported as
+*insufficient evidence* — its expected deformation is far below the floor.
+Attribution: no-change **supported**, atmospheric residual *plausible*.
+
+**Two real-data defects were caught by this dataset and fixed with
+regression checks:**
+
+1. *Product phase-filler false positive.* Without gating on the
+   unwrapping connected components, the granule's cc = 0 noise field
+   (finite but invalid phase, std ≈ 5 rad) produced a 5,923 km² "detection"
+   with a reference MAD of exactly zero. Cross-tabulating the component
+   labels against the phase field showed cc = 1 (the actual measurement)
+   is 99.7% exact-zero phase — the stable truth. Stage B now enforces
+   component ≥ 1 and warns when large fractions are excluded (86% here).
+2. *Raster aspect bug.* The browser overlay computed its canvas aspect
+   from a Mercator span in radians divided by a longitude span in degrees
+   — a 57× unit mismatch that squashed every canvas to a 760 × 64 strip.
+   Dense scenes hid it; the Mojave's 2%-valid sparse mask exposed it.
+   Fixed (radians/radians) and re-verified: overlays now render at
+   ~1024 × 1001 for this frame.
+
 ## 3. What is deliberately NOT validated
 
 - **No comparison against independent geodetic measurements** (GNSS, or

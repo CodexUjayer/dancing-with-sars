@@ -30,7 +30,7 @@ import { phaseGridToDisplacement } from './phase';
 import { combinedSigmaM } from './uncertainty';
 import { runDetection } from './detection';
 import { evaluateAttribution, forwardModelCheck } from './attribution';
-import { median, madSigma, planarFit } from './statistics';
+import { median, madSigma, std, planarFit } from './statistics';
 
 /** Base64-encode a typed array (little-endian, platform-checked). */
 function b64(arr: Float32Array | Uint8Array): string {
@@ -117,16 +117,36 @@ export function runPipeline(
   const n = w * h;
 
   // ---- Stage B: quality mask + referencing --------------------------------
+  // Mask = finite phase + coherence above threshold + (when the product
+  // provides connected components) membership of a validated unwrapping
+  // component. Component 0 marks pixels the producer did NOT unwrap, and
+  // 65535 is the HDF5 fill value — both can still carry finite but
+  // meaningless phase (the Mojave 2026 operational granule stores a noisy
+  // 5-rad field over its cc=0 areas, which once masqueraded as a 5,900 km²
+  // "detection" before this gate existed).
   const mask = new Uint8Array(n);
   const coh = ds.coherence.data;
   const phase = ds.phase.data;
+  const components = ds.components;
   let validCount = 0;
+  let cohPassCount = 0;
   for (let idx = 0; idx < n; idx++) {
     const c = coh[idx];
-    if (!Number.isNaN(phase[idx]) && !Number.isNaN(c) && c >= params.coherenceThreshold) {
-      mask[idx] = 1;
-      validCount++;
+    if (Number.isNaN(phase[idx]) || Number.isNaN(c) || c < params.coherenceThreshold) continue;
+    cohPassCount++;
+    if (components) {
+      const cc = components[idx];
+      if (cc === 0 || cc === 65535) continue;
     }
+    mask[idx] = 1;
+    validCount++;
+  }
+  if (components && cohPassCount > 0 && validCount < cohPassCount * 0.5) {
+    warnings.push(
+      `${(((cohPassCount - validCount) / cohPassCount) * 100).toFixed(0)}% of the pixels above the coherence ` +
+        'threshold are excluded because the product marks them as not-unwrapped (connected-component 0 or fill); ' +
+        'the stored phase there is not a valid measurement.',
+    );
   }
   if (validCount < 100) {
     throw new Error(
@@ -176,7 +196,20 @@ export function runPipeline(
     if (isRef[idx]) refValues.push(rawDisp[idx]);
   }
   const refOffset = median(refValues);
-  const refSigma = madSigma(refValues);
+  let refSigma = madSigma(refValues);
+  if (!Number.isFinite(refSigma) || refSigma <= 0) {
+    // Degenerate MAD: more than half of the reference pixels share one exact
+    // value (e.g. snaphu emitting exact zeros over a flat, fully coherent
+    // basin, as in the Mojave 2026 granule). Fall back to the standard
+    // deviation so the threshold keeps a meaningful spread term.
+    refSigma = std(refValues);
+    if (Number.isFinite(refSigma) && refSigma > 0) {
+      warnings.push(
+        'The reference-region MAD is degenerate (a single exact value dominates); using the standard ' +
+          'deviation as the reference scatter.',
+      );
+    }
+  }
   if (Number.isNaN(refOffset)) {
     throw new Error('Stage C: reference offset could not be computed (empty reference region).');
   }
@@ -213,6 +246,11 @@ export function runPipeline(
   }
 
   // ---- Stage D: uncertainty ---------------------------------------------------
+  // NOTE: the ionospheric screen uncertainty is deliberately NOT part of the
+  // per-pixel sigma: it is a spatially correlated systematic (the error of
+  // the already-applied correction), so treating it as independent
+  // per-pixel noise would be statistically wrong. It enters through the
+  // detection floor below, matching the documented design.
   const sigma = new Float32Array(n);
   for (let idx = 0; idx < n; idx++) {
     if (!mask[idx]) {
@@ -224,7 +262,6 @@ export function runPipeline(
       ds.numberOfLooks,
       ds.geometry.wavelength,
       refSigma,
-      ds.ionoScreenSigmaRad,
     );
   }
 
@@ -313,24 +350,30 @@ export function runPipeline(
   // ---- Narrative -----------------------------------------------------------------
   const mm = (v: number) => (v * 1000).toFixed(1);
   const effectiveFloorMm = Math.max(params.detectionFloor, ionoFloorM) * 1000;
-  const whatChanged =
-    summary.affectedAreaKm2 <= 0
-      ? `No ground motion above the detection threshold (${effectiveFloorMm.toFixed(0)} mm for this product) was found in this ${ds.provenance.temporalBaselineDays}-day radar pair. The surface appears stable at the level this measurement can resolve.`
-      : `The radar measurement shows ground motion between ${ds.provenance.referenceTime.slice(0, 10)} and ${ds.provenance.secondaryTime.slice(0, 10)}: an area of about ${summary.affectedAreaKm2.toFixed(0)} km² moved by more than the detection threshold, ${ds.isSynthetic ? '(synthetic validation fixture)' : 'measured along the satellite line of sight'}.`;
-  const howMuch =
-    summary.affectedAreaKm2 <= 0
-      ? `Upper bound on motion: less than ${mm(Math.max(effectiveFloorM, 3 * summary.referenceSigmaM))} mm anywhere in the analysed area.`
+  // Credibility criterion shared with the attribution layer: an affected
+  // area below max(1 km², 4 pixels) is treated as isolated stray pixels
+  // (statistical noise surviving the mask), not credible ground motion.
+  const minCredibleAreaKm2 = Math.max(1, summary.pixelAreaKm2 * 4);
+  const credibleDetection = summary.affectedAreaKm2 >= minCredibleAreaKm2;
+  const strayPixels = summary.affectedAreaKm2 > 0 && !credibleDetection;
+  const whatChanged = !credibleDetection
+    ? strayPixels
+      ? `Isolated pixels totalling about ${summary.affectedAreaKm2.toFixed(2)} km² crossed the detection threshold — below the ${minCredibleAreaKm2.toFixed(0)} km² minimum credible area for this ${ds.provenance.temporalBaselineDays}-day pair. In a scene at this coherence level that is consistent with statistical noise, not ground motion.`
+      : `No ground motion above the detection threshold (${effectiveFloorMm.toFixed(0)} mm for this product) was found in this ${ds.provenance.temporalBaselineDays}-day radar pair. The surface appears stable at the level this measurement can resolve.`
+    : `The radar measurement shows ground motion between ${ds.provenance.referenceTime.slice(0, 10)} and ${ds.provenance.secondaryTime.slice(0, 10)}: an area of about ${summary.affectedAreaKm2.toFixed(0)} km² moved by more than the detection threshold, ${ds.isSynthetic ? '(synthetic validation fixture)' : 'measured along the satellite line of sight'}.`;
+  const howMuch = !credibleDetection
+    ? `Upper bound on motion: less than ${mm(Math.max(effectiveFloorM, 3 * summary.referenceSigmaM))} mm anywhere in the analysed area.`
       : `Peak motion: ${mm(summary.maxAwayM)} mm away from the radar and ${mm(summary.maxTowardM)} mm toward it. Typical per-pixel measurement uncertainty is ±${mm(summary.medianSigmaM)} mm (one sigma), so the peaks are ${(
           Math.max(Math.abs(summary.maxAwayM), Math.abs(summary.maxTowardM)) /
           Math.max(summary.medianSigmaM, 1e-9)
         ).toFixed(0)}× the per-pixel noise.`;
   const reliability =
     `${(summary.validFraction * 100).toFixed(0)}% of the frame retained sufficient coherence for measurement ` +
-    `(median coherence ${summary.coherenceMedian.toFixed(2)}). The reference-region scatter is ±${mm(summary.referenceSigmaM)} mm ` +
-    `and dominates unmodelled residuals such as atmosphere. ${ccCount > 1 ? `Phase unwrapping split the scene into ${ccCount} regions — treat step-like boundaries with caution.` : 'Phase unwrapping is consistent across the scene.'} ` +
+    `(median coherence ${summary.coherenceMedian.toFixed(2)}). Reference-region scatter: ±${mm(summary.referenceSigmaM)} mm; ` +
     (ionoFloorM > 0
-      ? `The product's ionospheric correction carries a systematic uncertainty of about ±${mm(ionoFloorM)} mm at screen spatial scales, so smaller long-wavelength signals cannot be confidently attributed to ground motion from this single pair. `
-      : '') +
+      ? `the dominant unmodelled residual is the product's ionospheric correction systematic of about ±${mm(ionoFloorM)} mm at screen spatial scales, so smaller long-wavelength signals cannot be confidently attributed to ground motion from this single pair. `
+      : 'it dominates unmodelled residuals such as atmosphere. ') +
+    `${ccCount > 1 ? `Phase unwrapping split the scene into ${ccCount} regions — treat step-like boundaries with caution.` : 'Phase unwrapping is consistent across the scene.'} ` +
     'A single interferogram cannot separate slow processes from one-off events.';
 
   // ---- Transport grid ------------------------------------------------------------

@@ -1,6 +1,12 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Explicit scanner exclusions (belt-and-braces alongside .gitignore):
+   the data/ tree holds multi-GB science products; tools/ holds the Python
+   ingest tooling. Neither contains classes. */
+@source not "../data";
+@source not "../tools";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

@@ -113,6 +113,13 @@ export interface ScienceDataset {
   truth?: Raster;
   /** Model prediction (Okada forward from USGS source parameters), labelled */
   prediction?: Raster;
+  /**
+   * Dataset-suggested analysis parameter overrides used as the starting
+   * point for a run (the UI exposes them as pre-selected defaults; every
+   * value remains user-adjustable). Example: a heavily decorrelated scene
+   * suggests a lower coherence threshold than the global default.
+   */
+  suggestedParams?: Partial<AnalysisParams>;
 }
 
 /** Parameters controlling one pipeline run. */

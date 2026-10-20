@@ -64,21 +64,35 @@ bun run lint         # ESLint (Next.js rules)
 
 ## The demonstration flow
 
-1. **Panama M7.7 — real evidence (default selection).** A magnitude-7.7
-   earthquake struck Panama on 2026-10-09, between the acquisitions of real
-   NISAR interferometric pairs. Explore the official SDS browse imagery, the
-   granule catalogue with "spans event" badges, a live NASA CMR availability
-   check, the USGS moment tensor, and an Okada forward model of the expected
-   deformation — labelled as a prediction, not a measurement.
-2. **Los Angeles 2008 — real measurement.** A genuine NISAR-format L-band
+1. **Mojave 2026 — real operational NISAR data (default selection).** A
+   genuine 2.58 GB NISAR L2 GUNW granule from the operational mission
+   (12-day pair, May–June 2026, left-looking descending track over the
+   southern Sierra / Mojave Desert), downloaded from the ASF Earthdata
+   cloud with an authenticated NASA Earthdata account and analysed
+   end-to-end. The pair was acquired through a severely disturbed
+   ionosphere: coherence collapsed scene-wide and the product's own
+   ionospheric screens reach tens of radians. The honest outcome —
+   **no deformation claim possible** — is shown with the numbers: 2% of
+   the frame validly unwrapped, 0 km² above the 72 mm systematic floor,
+   and a real M4.06 earthquake inside the frame reported as *insufficient
+   evidence* rather than a cause.
+2. **Panama M7.7 — real evidence.** A magnitude-7.7 earthquake struck
+   Panama on 2026-10-09, between the acquisitions of real NISAR
+   interferometric pairs. Explore the official SDS browse imagery, the
+   granule catalogue with "spans event" badges, a live NASA CMR
+   availability check, the USGS moment tensor, and an Okada forward model
+   of the expected deformation — labelled as a prediction, not a
+   measurement.
+3. **Los Angeles 2008 — real measurement.** A genuine NISAR-format L-band
    unwrapped interferogram (46-day pair) analysed end-to-end: displacement
    map with uncertainty, coherence and σ layers, detection statistics and
    attribution. The honest outcome is "no motion above this product's
    ionospheric systematic floor" — with the numbers to back it up.
-3. **Synthetic validation lab.** Three deterministic fixtures (dextral
-   strike-slip, thrust, null) with analytic Okada ground truth. The pipeline
-   recovers the deformation to ~2.6 mm MAE and produces zero false alarms on
-   the null fixture — the numbers are shown next to each result.
+4. **Synthetic validation lab.** Three deterministic fixtures (dextral
+   strike-slip, thrust, null) with analytic Okada ground truth. The
+   pipeline recovers the deformation to ~2.6 mm MAE and produces zero
+   false alarms on the null fixture — the numbers are shown next to each
+   result.
 
 ## Repository map
 

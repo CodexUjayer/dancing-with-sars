@@ -103,7 +103,7 @@ function HoverReadout({
     v === undefined || Number.isNaN(v) ? '—' : `${(v * scale).toFixed(digits)} ${unit}`;
   let value = '—';
   if (sample) {
-    if (layer === 'displacement') value = fmt(sample.displacement, 'mm');
+    if (layer === 'displacement' || layer === 'coverage') value = fmt(sample.displacement, 'mm');
     else if (layer === 'coherence') value = Number.isFinite(sample.coherence) ? sample.coherence.toFixed(2) : '—';
     else value = fmt(sample.sigma, 'mm');
   }
@@ -119,6 +119,18 @@ function HoverReadout({
 }
 
 function Legend({ layer, scaleMaxM }: { layer: LayerKind; scaleMaxM?: number }) {
+  if (layer === 'coverage') {
+    return (
+      <div className="absolute bottom-3 left-3 z-[500] rounded-lg border bg-white/95 px-3 py-2 shadow-sm">
+        <div className="mb-1 text-[10px] uppercase tracking-[0.08em] text-[#8A837B]">Valid measurement area</div>
+        <div className="flex items-center gap-2">
+          <span className="h-2 w-8 rounded-sm border border-[#E7E2DA]" style={{ background: 'rgb(148,140,129)' }} />
+          <span className="font-mono text-[10px] text-[#6F6862]">measured (mask = 1)</span>
+        </div>
+        <div className="mt-1 text-[10px] text-[#8A837B]">transparent = not a valid unwrapped measurement</div>
+      </div>
+    );
+  }
   const gradient =
     layer === 'displacement'
       ? `linear-gradient(to right, ${displacementColor(-1)}, ${displacementColor(-0.34)}, ${displacementColor(0)}, ${displacementColor(0.34)}, ${displacementColor(1)})`
@@ -173,6 +185,9 @@ export default function MapPanel(props: MapPanelProps) {
       try {
         const ov = renderOverlay(grids, gridsMeta, layer);
         setOverlay(ov ?? null);
+      } catch (e) {
+        console.error('[motus-overlay] render failed', e);
+        setOverlay(null);
       } finally {
         setRendering(false);
       }

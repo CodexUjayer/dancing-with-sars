@@ -49,6 +49,13 @@ dev.out.log
 test
 prompt
 
+# Science data products (raw HDF5 granules, derived rasters, browse images)
+# and the Python virtualenv must never be committed — and Tailwind 4's
+# automatic content scanner respects these ignores (a 2.58 GB granule in
+# data/raw once OOM-killed the dev server's CSS build).
+/data/
+/tools/venv/
+
 server.log
 # Skills directory
 /skills/

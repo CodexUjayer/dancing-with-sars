@@ -29,6 +29,16 @@ const bodySchema = z.object({
 const globalCache = globalThis as unknown as { __motusResults?: Map<string, AnalysisResult | unknown> };
 if (!globalCache.__motusResults) globalCache.__motusResults = new Map();
 const resultCache = globalCache.__motusResults;
+/** Cache bound: each entry holds ~10 MB of transport rasters; this host has
+ *  a small memory budget, so evict oldest entries beyond this limit. */
+const RESULT_CACHE_MAX = 10;
+function rememberResult(key: string, value: unknown): void {
+  resultCache.set(key, value);
+  while (resultCache.size > RESULT_CACHE_MAX) {
+    const oldest = resultCache.keys().next().value as string;
+    resultCache.delete(oldest);
+  }
+}
 
 function cacheKey(datasetId: string, params: unknown): string {
   return `${datasetId}::${JSON.stringify(params)}`;
@@ -87,16 +97,20 @@ export async function POST(req: Request) {
   }
 
   const { datasetId } = body;
-  const params = { ...DEFAULT_PARAMS, ...(body.params ?? {}) };
-  const key = cacheKey(datasetId, params);
-  if (resultCache.has(key)) {
-    const cached = resultCache.get(key) as { runId?: string } & Record<string, unknown>;
-    return NextResponse.json({ ok: true, cached: true, runId: cached.runId, result: cached });
-  }
 
   const ds = getDataset(datasetId);
   if (!ds) {
     return NextResponse.json({ ok: false, error: `Unknown dataset: ${datasetId}` }, { status: 404 });
+  }
+
+  // Parameter precedence: request body > dataset-suggested defaults > global defaults.
+  // (Scene-adapted suggestions, e.g. a lower coherence threshold for a
+  // decorrelated ionosphere-dominated pair, are visible and adjustable in the UI.)
+  const params = { ...DEFAULT_PARAMS, ...(ds.suggestedParams ?? {}), ...(body.params ?? {}) };
+  const key = cacheKey(datasetId, params);
+  if (resultCache.has(key)) {
+    const cached = resultCache.get(key) as { runId?: string } & Record<string, unknown>;
+    return NextResponse.json({ ok: true, cached: true, runId: cached.runId, result: cached });
   }
 
   const t0 = Date.now();
@@ -127,7 +141,7 @@ export async function POST(req: Request) {
         },
       });
       (result as { runId?: string }).runId = run.id;
-      resultCache.set(key, result);
+      rememberResult(key, result);
       return NextResponse.json({ ok: true, runId: run.id, result });
     }
 

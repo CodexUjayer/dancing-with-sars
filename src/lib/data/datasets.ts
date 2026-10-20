@@ -9,7 +9,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import type { GridMeta, Raster, ScienceDataset } from '@/lib/science/types';
+import type { GridMeta, Raster, ScienceDataset, AnalysisParams } from '@/lib/science/types';
 import {
   syntheticStrikeSlipFixture,
   syntheticThrustFixture,
@@ -92,7 +92,16 @@ function readUint16(file: string): Uint16Array {
   return out;
 }
 
-function loadDerivedDataset(dir: string, sourceUrl: string, accessNotes: string): ScienceDataset {
+interface DerivedLoadOptions {
+  sourceUrl: string;
+  accessNotes: string;
+  provider?: string;
+  productType?: string;
+  /** Suggested starting parameters (user-adjustable in the UI). */
+  suggestedParams?: Partial<AnalysisParams>;
+}
+
+function loadDerivedDataset(dir: string, opts: DerivedLoadOptions): ScienceDataset {
   const meta = JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf-8')) as DerivedMeta;
   const phaseRaster: Raster = { meta: meta.grid, data: readFloat32(path.join(dir, 'phase.f32')) };
   const coherenceRaster: Raster = {
@@ -122,11 +131,12 @@ function loadDerivedDataset(dir: string, sourceUrl: string, accessNotes: string)
     title: meta.title,
     blurb: meta.blurb,
     mode: 'quantitative',
+    suggestedParams: opts.suggestedParams,
     provenance: {
       datasetId: `real-${meta.slug}`,
-      provider: 'NASA / ASF DAAC (NISAR sample products, processed by JPL NISAR SDS)',
+      provider: opts.provider ?? 'NASA / ASF DAAC (NISAR sample products, processed by JPL NISAR SDS)',
       productId: meta.identification.granuleId,
-      productType: 'NISAR L2 GUNW — geocoded unwrapped interferogram (sample product)',
+      productType: opts.productType ?? 'NISAR L2 GUNW — geocoded unwrapped interferogram (sample product)',
       platform: `${meta.identification.missionId} L-band (NISAR SDS v${meta.processing.softwareVersion})`,
       referenceTime: meta.identification.referenceZeroDopplerStartTime,
       secondaryTime: meta.identification.secondaryZeroDopplerStartTime,
@@ -134,9 +144,9 @@ function loadDerivedDataset(dir: string, sourceUrl: string, accessNotes: string)
       processingTime: meta.identification.processingDateTime,
       processingSoftware: `NISAR SDS ${meta.processing.softwareVersion}, spec v${meta.identification.productSpecificationVersion}`,
       dataClass: 'real',
-      sourceUrl,
+      sourceUrl: opts.sourceUrl,
       doi: meta.identification.productDoi,
-      accessNotes,
+      accessNotes: opts.accessNotes,
       qualityNotes,
     },
     geometry: {
@@ -282,12 +292,31 @@ export function getDataset(id: string): ScienceDataset | undefined {
   if (cache.has(id)) return cache.get(id);
 
   let ds: ScienceDataset | undefined;
-  if (id === 'real-nisar-la-2008') {
-    ds = loadDerivedDataset(
-      path.join(DERIVED_ROOT, 'nisar-la-2008'),
-      'https://nisar.jpl.nasa.gov/data/sample-data/ (NISAR-SAMPLE-DATA, open access)',
-      'Openly distributed official NISAR sample product (ALOS PALSAR data processed through the NISAR SDS).',
-    );
+  if (id === 'real-nisar-mojave-2026') {
+    ds = loadDerivedDataset(path.join(DERIVED_ROOT, 'nisar-mojave-2026'), {
+      sourceUrl:
+        'https://nisar.asf.earthdatacloud.nasa.gov/NISAR/NISAR_L2_GUNW_PROVISIONAL_V1/' +
+        'NISAR_L2_PR_GUNW_021_013_D_071_022_4000_SH_20260522T024038_20260522T024116_20260603T024038_20260603T024115_P05023_N_F_J_001/' +
+        'NISAR_L2_PR_GUNW_021_013_D_071_022_4000_SH_20260522T024038_20260522T024116_20260603T024038_20260603T024115_P05023_N_F_J_001.h5',
+      accessNotes:
+        'Downloaded from the ASF Earthdata cloud with an authenticated NASA Earthdata account ' +
+        '(bearer token -> presigned-URL exchange; see tools/fetch_nisar_granule.py and ' +
+        'tools/parallel_fetch.sh). The collection is openly catalogued via NASA CMR; HDF5 downloads ' +
+        'require the free Earthdata Login. Local copy: data/raw/ (2.58 GB).',
+      provider: 'NASA / ASF DAAC (NISAR operational mission data, processed by JPL NISAR SDS)',
+      productType:
+        'NISAR L2 GUNW — geocoded unwrapped interferogram (operational NISAR_L2_GUNW_PROVISIONAL_V1 collection)',
+      // This pair was acquired through a severely disturbed ionosphere (the product's own
+      // ionospheric phase screens reach tens of radians) and coherence collapsed scene-wide;
+      // the global 0.5 default would reject the scene outright at Stage B. 0.1 keeps the run
+      // meaningful while the reference-scatter term keeps the detection threshold honest.
+      suggestedParams: { coherenceThreshold: 0.1 },
+    });
+  } else if (id === 'real-nisar-la-2008') {
+    ds = loadDerivedDataset(path.join(DERIVED_ROOT, 'nisar-la-2008'), {
+      sourceUrl: 'https://nisar.jpl.nasa.gov/data/sample-data/ (NISAR-SAMPLE-DATA, open access)',
+      accessNotes: 'Openly distributed official NISAR sample product (ALOS PALSAR data processed through the NISAR SDS).',
+    });
   } else if (id === 'evidence-panama-2026') {
     ds = loadPanamaEvidenceDataset();
   } else if (id.startsWith('synthetic-')) {
@@ -311,10 +340,12 @@ export interface DatasetListEntry {
   secondaryTime: string;
   temporalBaselineDays: number;
   center: { lat: number; lon: number } | undefined;
+  suggestedParams?: Partial<AnalysisParams>;
 }
 
 export function listDatasets(): DatasetListEntry[] {
   const ids = [
+    'real-nisar-mojave-2026',
     'evidence-panama-2026',
     'real-nisar-la-2008',
     'synthetic-strikeslip',
@@ -336,6 +367,7 @@ export function listDatasets(): DatasetListEntry[] {
       secondaryTime: ds.provenance.secondaryTime,
       temporalBaselineDays: ds.provenance.temporalBaselineDays,
       center: ds.center,
+      suggestedParams: ds.suggestedParams,
     };
   });
 }

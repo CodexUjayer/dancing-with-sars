@@ -24,6 +24,12 @@ export interface DatasetListEntry {
   secondaryTime: string;
   temporalBaselineDays: number;
   center?: { lat: number; lon: number };
+  /** Scene-adapted starting parameters suggested by the dataset registry. */
+  suggestedParams?: {
+    coherenceThreshold?: number;
+    detectionFloor?: number;
+    significanceK?: number;
+  };
 }
 
 export interface PanamaGranule {
