@@ -102,10 +102,19 @@ function HoverReadout({
   const fmt = (v: number | undefined, unit: string, scale = 1000, digits = 1) =>
     v === undefined || Number.isNaN(v) ? '—' : `${(v * scale).toFixed(digits)} ${unit}`;
   let value = '—';
+  let label = '';
   if (sample) {
-    if (layer === 'displacement' || layer === 'coverage') value = fmt(sample.displacement, 'mm');
-    else if (layer === 'coherence') value = Number.isFinite(sample.coherence) ? sample.coherence.toFixed(2) : '—';
-    else value = fmt(sample.sigma, 'mm');
+    if (layer === 'displacement' || layer === 'coverage') {
+      const mm = sample.displacement * 1000;
+      value = `${Math.abs(mm).toFixed(1)} mm`;
+      label = mm >= 0 ? 'away from satellite' : 'toward satellite';
+    } else if (layer === 'coherence') {
+      value = Number.isFinite(sample.coherence) ? sample.coherence.toFixed(2) : '—';
+      label = 'signal quality (0–1)';
+    } else {
+      value = fmt(sample.sigma, 'mm');
+      label = 'uncertainty';
+    }
   }
   return (
     <div
@@ -113,7 +122,10 @@ function HoverReadout({
       aria-live="polite"
     >
       <div>{pos.lat.toFixed(4)}°, {pos.lon.toFixed(4)}°</div>
-      <div className="text-[#1C1A17]">{value}</div>
+      <div className="text-[#1C1A17]">
+        {value}
+        {label && <span className="ml-1.5 font-sans text-[10px] text-[#8A837B]">{label}</span>}
+      </div>
     </div>
   );
 }
@@ -122,12 +134,12 @@ function Legend({ layer, scaleMaxM }: { layer: LayerKind; scaleMaxM?: number }) 
   if (layer === 'coverage') {
     return (
       <div className="absolute bottom-3 left-3 z-[500] rounded-lg border bg-white/95 px-3 py-2 shadow-sm">
-        <div className="mb-1 text-[10px] uppercase tracking-[0.08em] text-[#8A837B]">Valid measurement area</div>
+        <div className="mb-1 text-[10px] uppercase tracking-[0.08em] text-[#8A837B]">Where measurements exist</div>
         <div className="flex items-center gap-2">
           <span className="h-2 w-8 rounded-sm border border-[#E7E2DA]" style={{ background: 'rgb(148,140,129)' }} />
-          <span className="font-mono text-[10px] text-[#6F6862]">measured (mask = 1)</span>
+          <span className="font-mono text-[10px] text-[#6F6862]">measured</span>
         </div>
-        <div className="mt-1 text-[10px] text-[#8A837B]">transparent = not a valid unwrapped measurement</div>
+        <div className="mt-1 text-[10px] text-[#8A837B]">transparent = signal too weak to measure</div>
       </div>
     );
   }
@@ -139,33 +151,37 @@ function Legend({ layer, scaleMaxM }: { layer: LayerKind; scaleMaxM?: number }) 
         : `linear-gradient(to right, #F5F1E8, #E2C7AC, #B0714E, #7A4A2B)`;
   const left =
     layer === 'displacement'
-      ? `−${((scaleMaxM ?? 0.05) * 100).toFixed(0)} cm`
+      ? `${((scaleMaxM ?? 0.05) * 100).toFixed(0)} cm toward`
       : layer === 'coherence'
-        ? '0.0'
+        ? 'weak signal'
         : 'low';
   const right =
     layer === 'displacement'
-      ? `+${((scaleMaxM ?? 0.05) * 100).toFixed(0)} cm`
+      ? `${((scaleMaxM ?? 0.05) * 100).toFixed(0)} cm away`
       : layer === 'coherence'
-        ? '1.0'
+        ? 'strong signal'
         : 'high';
-  const mid = layer === 'displacement' ? '0' : '';
+  const title =
+    layer === 'displacement'
+      ? 'Movement toward / away from the satellite'
+      : layer === 'coherence'
+        ? 'Signal quality (coherence)'
+        : 'Measurement uncertainty';
   return (
     <div className="absolute bottom-3 left-3 z-[500] rounded-lg border bg-white/95 px-3 py-2 shadow-sm">
-      <div className="mb-1 text-[10px] uppercase tracking-[0.08em] text-[#8A837B]">
-        {layer === 'displacement' ? 'LOS displacement' : layer === 'coherence' ? 'Coherence' : 'Uncertainty (1σ)'}
-      </div>
+      <div className="mb-1 text-[10px] uppercase tracking-[0.08em] text-[#8A837B]">{title}</div>
       <div className="flex items-center gap-2">
         <span className="font-mono text-[10px] text-[#6F6862]">{left}</span>
         <div className="h-2 w-32 rounded-sm border border-[#E7E2DA]" style={{ background: gradient }} />
         <span className="font-mono text-[10px] text-[#6F6862]">{right}</span>
       </div>
-      {layer === 'displacement' && (
-        <div className="mt-1 text-[10px] text-[#8A837B]">
-          + away from satellite · − toward
-        </div>
-      )}
-      {mid && <div className="mt-0.5 text-center font-mono text-[9px] text-[#8A837B]">{mid}</div>}
+      <div className="mt-1 text-[10px] text-[#8A837B]">
+        {layer === 'displacement'
+          ? 'brown = toward the satellite · green = away from it · pale = little or no change'
+          : layer === 'coherence'
+            ? 'darker = more reliable measurement'
+            : 'darker = more uncertain measurement'}
+      </div>
     </div>
   );
 }
@@ -272,16 +288,16 @@ export default function MapPanel(props: MapPanelProps) {
       </MapContainer>
       {dataset.availability.state !== 'available' && (
         <div className="pointer-events-none absolute inset-x-0 top-1/2 z-[500] -translate-y-1/2 px-6 text-center">
-          <p className="mx-auto max-w-md rounded-lg border border-[#E5C4B7] bg-[#FBF3EF]/95 px-4 py-3 text-[12px] leading-4 text-[#9E3B2C]">
-            The local scientific data for this dataset has not been obtained, so there is nothing to
-            display on the map yet. The instructions in the panel on the right explain how to obtain it.
+          <p className="mx-auto max-w-md rounded-lg border border-[#E5C4B7] bg-[#FBF3EF]/95 px-4 py-3 text-[12px] leading-[1.4rem] text-[#9E3B2C]">
+            The data for this area have not been downloaded to this server, so there is nothing to
+            show on the map yet. The panel alongside explains how to obtain them.
           </p>
         </div>
       )}
       {overlay && <Legend layer={layer} scaleMaxM={overlay.scaleMaxM} />}
       {rendering && (
-        <div className="absolute right-3 top-3 z-[500] rounded-md border bg-white/95 px-2.5 py-1 text-[11px] text-[#6F6862] shadow-sm">
-          Rendering layer…
+        <div className="absolute right-3 top-14 z-[500] rounded-md border bg-white/95 px-2.5 py-1 text-[11px] text-[#6F6862] shadow-sm">
+          Drawing the layer…
         </div>
       )}
     </div>

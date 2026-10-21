@@ -3,14 +3,17 @@
 /**
  * Evidence viewer (Panama): official NISAR browse imagery, granule table,
  * live CMR availability check and the USGS sequence.
+ *
+ * FINAL-PASS UI: section titles and explanations are plain-language first;
+ * technical identifiers (granule IDs, catalog names) remain visible for
+ * inspection.
  */
 
 import { useState } from 'react';
 import { Loader2, Satellite, RefreshCw, AlertTriangle, ExternalLink, Maximize2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
-import { MicroLabel, fmtDateTime } from './ui-bits';
-import { EventRow } from './results-panel';
+import { MicroLabel, fmtDateTime, EventRow } from './ui-bits';
 import type { CmrLiveResult, EvidenceAnalysisResult, PanamaGranule } from './types';
 
 function parsePoly(poly: string): [number, number][] {
@@ -103,19 +106,20 @@ export function EvidenceViewer({
     <div className="space-y-6">
       <section aria-labelledby="browse">
         <div className="flex items-baseline justify-between">
-          <h2 id="browse" className="text-[15px] font-semibold text-[#1C1A17]">Official NISAR browse imagery</h2>
+          <h2 id="browse" className="text-[14px] font-semibold text-[#1C1A17]">Official radar images of the area</h2>
           <button
             type="button"
             onClick={() => setZoomOpen(true)}
             className="flex items-center gap-1 text-[11px] text-[#6F6862] hover:text-[#1C1A17]"
-            aria-label="Open full-size browse image"
+            aria-label="Open full-size image"
           >
             <Maximize2 className="h-3 w-3" aria-hidden /> full size
           </button>
         </div>
-        <p className="mt-1 text-[12px] leading-4 text-[#8A837B]">
-          The NISAR SDS geocoded unwrapped-phase rendering for the pair whose footprint covers the epicentre.
-          This is the official product imagery, openly served by the ASF Earthdata Cloud.
+        <p className="mt-1 text-[12px] leading-[1.45rem] text-[#8A837B]">
+          NASA&apos;s own rendered images of the radar data covering the earthquake area. The colors
+          show the pattern in the raw radar comparison — read them as a preview, not as a finished
+          measurement.
         </p>
         {active && (
           <figure className="mt-2.5">
@@ -152,7 +156,10 @@ export function EvidenceViewer({
       </section>
 
       <section aria-labelledby="granules">
-        <h2 id="granules" className="text-[15px] font-semibold text-[#1C1A17]">Catalogued pairs</h2>
+        <h2 id="granules" className="text-[14px] font-semibold text-[#1C1A17]">Radar data pairs that cover the earthquake</h2>
+        <p className="mt-1 text-[12px] leading-[1.45rem] text-[#8A837B]">
+          Each row is one radar data product. The date range shows when its two images were taken.
+        </p>
         <div className="mt-2 overflow-hidden rounded-lg border border-[#EFEAE2]">
           <table className="w-full text-left">
             <thead>
@@ -172,14 +179,18 @@ export function EvidenceViewer({
           </table>
         </div>
         <p className="mt-1.5 text-[11px] leading-4 text-[#8A837B]">
-          &ldquo;Spans event&rdquo; = the two acquisitions enclose the earthquake time, so the coseismic deformation is
-          captured in the product. Downloads of the full HDF5 require a free NASA Earthdata Login.
+          &ldquo;Spans event&rdquo; means the two radar images were taken before and after the
+          earthquake, so any ground movement it caused would be captured between them. Downloading
+          the full data files requires a free NASA Earthdata account.
         </p>
       </section>
 
       <section aria-labelledby="cmr-live">
         <div className="flex items-center justify-between">
-          <h2 id="cmr-live" className="text-[15px] font-semibold text-[#1C1A17]">Live availability (NASA CMR)</h2>
+          <div>
+            <h2 id="cmr-live" className="text-[14px] font-semibold text-[#1C1A17]">Check NASA&apos;s data catalog now</h2>
+            <p className="mt-0.5 text-[11.5px] text-[#8A837B]">Live query — confirms the data are still listed as available.</p>
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -194,7 +205,7 @@ export function EvidenceViewer({
         {cmrLoading && (
           <div className="mt-2 flex items-center gap-2 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] px-3 py-2.5 text-[12px] text-[#6F6862]">
             <Satellite className="h-3.5 w-3.5" aria-hidden />
-            Querying NASA&apos;s Common Metadata Repository for NISAR unwrapped-interferogram granules…
+            Asking NASA&apos;s data catalog which radar products currently cover this region…
           </div>
         )}
         {cmr?.ok && cmr.granules && (
@@ -224,19 +235,22 @@ export function EvidenceViewer({
         {cmr && !cmr.ok && (
           <div className="mt-2 flex items-start gap-2 rounded-lg border border-[#E7D9B8] bg-[#FCF8EE] px-3 py-2.5 text-[12px] text-[#7A6438]">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span>Live query failed: {cmr.error ?? 'unknown error'}. The cached catalogue above was verified on 2026-10-20.</span>
+            <span>The live check could not reach NASA right now ({cmr.error ?? 'unknown error'}). The records above were verified on 2026-10-20 and remain valid as a snapshot.</span>
           </div>
         )}
         {!cmr && !cmrLoading && (
           <p className="mt-1.5 text-[11px] leading-4 text-[#8A837B]">
-            Queries NASA CMR live (short_name NISAR_L2_GUNW_PROVISIONAL_V1). The cached records above were verified on 2026-10-20.
+            This asks NASA&apos;s live data catalog. The records listed above were verified on 2026-10-20.
           </p>
         )}
       </section>
 
       {result.liveEvents.length > 0 && (
         <section aria-labelledby="sequence">
-          <h2 id="sequence" className="text-[15px] font-semibold text-[#1C1A17]">Nearby sequence (live USGS query)</h2>
+          <h2 id="sequence" className="text-[14px] font-semibold text-[#1C1A17]">Other earthquakes nearby (live USGS list)</h2>
+          <p className="mt-1 text-[11.5px] leading-4 text-[#8A837B]">
+            Independent earthquake records around the same days, from the USGS. The first is the main event.
+          </p>
           <ul className="mt-2 space-y-1.5">
             {result.liveEvents.slice(0, 5).map((ev) => (
               <EventRow key={ev.id} ev={ev} />
@@ -245,19 +259,23 @@ export function EvidenceViewer({
         </section>
       )}
       {result.liveStatus !== 'live' && (
-        <div className="flex items-start gap-2 rounded-lg border border-[#E7D9B8] bg-[#FCF8EE] px-3 py-2.5 text-[11.5px] leading-4 text-[#7A6438]">
+        <div className="flex items-start gap-2 rounded-lg border border-[#E7D9B8] bg-[#FCF8EE] px-3 py-2.5 text-[11.5px] leading-[1.4rem] text-[#7A6438]">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span>Live USGS sequence unavailable right now ({result.liveStatus}). The primary event record above is the cached USGS catalogue entry (verified 2026-10-20, with its published moment tensor).</span>
+          <span>The live earthquake list is unreachable right now, so the records above come from the verified snapshot taken on 2026-10-20 (including the published fault information for the main event).</span>
         </div>
       )}
 
       <section aria-labelledby="model">
-        <h2 id="model" className="text-[15px] font-semibold text-[#1C1A17]">Independent forward model — labelled prediction, not measurement</h2>
-        <p className="mt-1.5 text-[12.5px] leading-5 text-[#4A443C]">{result.narrative.howMuch}</p>
-        <p className="mt-2 text-[12.5px] leading-5 text-[#4A443C]">{result.narrative.reliability}</p>
+        <h2 id="model" className="text-[14px] font-semibold text-[#1C1A17]">What an earthquake model predicts</h2>
+        <p className="mt-1 text-[11.5px] leading-4 text-[#8A837B]">
+          A standard geophysics model, computed from the earthquake&apos;s published fault
+          information. It is a labelled prediction — <strong>not a measurement of this event</strong>.
+        </p>
+        <p className="mt-2 text-[12.5px] leading-[1.5rem] text-[#4A443C]">{result.narrative.howMuch}</p>
+        <p className="mt-2 text-[12.5px] leading-[1.5rem] text-[#4A443C]">{result.narrative.reliability}</p>
         {result.event?.nodalPlane && (
           <div className="mt-3 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3">
-            <MicroLabel>USGS moment tensor (nodal plane 1)</MicroLabel>
+            <MicroLabel>Published fault information (USGS moment tensor, nodal plane 1)</MicroLabel>
             <div className="mt-1 font-mono text-[12px] tabular-nums text-[#4A443C]">
               strike {result.event.nodalPlane.strike.toFixed(1)}° · dip {result.event.nodalPlane.dip.toFixed(1)}° · rake {result.event.nodalPlane.rake.toFixed(1)}°
               {result.event.momentTensorSource ? ` · ${result.event.momentTensorSource}` : ''}
@@ -272,6 +290,10 @@ export function EvidenceViewer({
             </a>
           </div>
         )}
+        <p className="mt-2 text-[11px] leading-4 text-[#8A837B]">
+          Even a perfect match between this prediction and a future measurement would not prove
+          causation on its own — it would be strong, checkable evidence.
+        </p>
       </section>
     </div>
   );

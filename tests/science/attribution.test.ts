@@ -308,3 +308,41 @@ describe('attribution honesty (§7)', () => {
     expect(h.evidence.join(' ')).toContain('not causation');
   });
 });
+
+describe('synthetic-fixture attribution honesty (final-pass fix, 2026-10-21)', () => {
+  test('an earthquake fixture never reports "no USGS catalog earthquake" against its own construction', () => {
+    const res = runPipeline(syntheticStrikeSlipFixture(), {}, []);
+    const h = res.attribution.hypotheses.find((x) => x.id === 'coseismic')!;
+    // The signal IS an earthquake model by construction — the catalog-based
+    // "not supported / no USGS event" verdict would be self-contradictory.
+    const text = h.evidence.join(' ');
+    expect(text).not.toContain('No USGS catalog earthquake');
+    expect(text).toContain('by construction');
+    expect(h.status).toBe('supported');
+    expect(res.attribution.methodNote).toContain('Demonstration dataset');
+  });
+
+  test('the null fixture still reports no coseismic signal — by construction', () => {
+    const res = runPipeline(syntheticNullFixture(), {}, []);
+    const h = res.attribution.hypotheses.find((x) => x.id === 'coseismic')!;
+    expect(h.status).toBe('not-supported');
+    expect(h.evidence.join(' ')).toContain('by construction');
+    // The false-alarm control verdict is unchanged.
+    expect(res.attribution.hypotheses.find((x) => x.id === 'null')!.status).toBe('supported');
+  });
+
+  test('synthetic fixtures do not cite real-product correction status', () => {
+    const res = runPipeline(syntheticStrikeSlipFixture(), {}, []);
+    for (const h of res.attribution.hypotheses) {
+      expect(h.evidence.join(' ')).not.toContain('ASF NISAR GUNW guide');
+    }
+  });
+
+  test('a real-path verdict is preserved when an event IS provided (synthetic used as a stand-in)', () => {
+    const ds2 = syntheticStrikeSlipFixture();
+    const sel = rankEventsForPair([mkEvent({ magnitude: 6.4 })], ds2);
+    const out = evaluateAttribution(ds2, { ...runPipeline(ds2, {}, []).summary, affectedAreaKm2: 500 }, sel);
+    const h = out.hypotheses.find((x) => x.id === 'coseismic')!;
+    expect(h.status).not.toBe('supported'); // catalog screen outcome, not a construction fact
+  });
+});

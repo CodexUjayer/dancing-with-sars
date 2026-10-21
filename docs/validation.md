@@ -1,7 +1,7 @@
 # Validation
 
 Recorded 2026-10-21, from the actual test run in this repository
-(`bun test`): **86 tests, 86 pass, 0 fail, 485 assertions, ~3.4 s.**
+(`bun test`): **90 tests, 90 pass, 0 fail, 498 assertions, ~4.1 s** (final pass, 2026-10-21: +4 synthetic-attribution honesty regression tests).
 (Includes the remediation suites: clean-clone registry behaviour, event
 selection, forward-model coordinate alignment, detection statistics.)
 
@@ -28,6 +28,7 @@ API · **DOC** = documented claim from a prior run, not re-executable here.
 | Null-scene screen (exploratory FP behaviour) | SYN | 8 correlated-noise scenes per run | `bun test tests/science/detection.test.ts` | small, deterministic exceedance fraction | strikeslip 0.282%, thrust 0.326%, null 0.140% mean false-exceedance | **REPRODUCED** | NOT a calibrated false-alarm rate (documented) |
 | Clean clone lists datasets without crashing | UT | temp-dir scenarios | `bun test tests/data/registry.test.ts` | structured states, no throw | passes (missing/incomplete/invalid scenarios) | **REPRODUCED** | |
 | Event ranking never takes first API result | UT | synthetic event lists | `bun test tests/science/attribution.test.ts` | largest/nearer/with-mechanism wins; exclusions carry reasons | passes | **REPRODUCED** | ranking is a relevance order, not causation |
+| Synthetic earthquake fixture is not contradicted by its own attribution | UT | seeded fixtures | `bun test tests/science/attribution.test.ts` | coseismic status reflects known construction, never "no USGS event" | passes (supported-by-construction; null fixture stays not-supported-by-construction) | **REPRODUCED** | fix of final-pass audit finding 2026-10-21 |
 | Forward model anchored at epicentre | UT | synthetic grids | same | bit-identical values on shifted grids; peak follows the event | passes (max diff 0.0 on probe points) | **REPRODUCED** | UTM-only; polar-stereographic granules disable the check |
 | LA 2008 sample: honest negative below iono floor | INT | committed derived product (`data/derived/nisar-la-2008`, checksums in `docs/data-manifest.md`) | `bun test tests/science/pipeline.test.ts` | floor reported; no detection above floor | valid 14.6%, coh. median 0.57, ref σ 18.5 mm, iono floor 81.0 mm (basis: uncertainty), median threshold 81.0 mm, max apparent LOS 89.4 mm → 0.013 km² stray pixels only | **REPRODUCED** | real product, but no independent geodetic comparison exists |
 | Extractor validates GUNW structure | UT | synthetic HDF5 fixtures | `python3 tools/test_extract_gunw.py` | 26 checks pass | 26/26 pass (exit 0) | **REPRODUCED** | synthetic fixtures only; real-product extraction verified once for LA |
@@ -35,7 +36,7 @@ API · **DOC** = documented claim from a prior run, not re-executable here.
 | Panama evidence (granule catalogue, M7.7 event, browse imagery) | INT + LIVE | committed CMR/USGS caches + live re-verification | `POST /api/analyses {"datasetId":"evidence-panama-2026"}` | granules bracket event; conservative language | 3 granules, selection by explicit criteria (epicentre containment), narrative uses the mandated "has not yet been established" wording | **REPRODUCED** | browse imagery ≠ science rasters; no quantitative claim |
 | USGS/CMR live queries work | LIVE | FDSN + CMR APIs | UI live checks / `curl` | events and granules return | verified during browser E2E (2026-10-21) | **REPRODUCED** | network-dependent; app degrades explicitly on failure |
 
-## 2. Test inventory (86 tests)
+## 2. Test inventory (90 tests)
 
 ### tests/science/okada.test.ts — the physics engine
 Unchanged from the pre-remediation suite: 24 benchmark geometries × 3 slip
@@ -58,7 +59,12 @@ exclusions), forward-model epicentre anchoring (move-event tracking,
 bit-exact grid-shift invariance, near-epicentre peak, non-UTM refusal,
 mechanism-missing skip), and attribution language assertions ("consistent,
 not causation"; "no detection above threshold, NOT no motion"; single
-component ≠ proof of artefact absence).
+component ≠ proof of artefact absence). Final pass (2026-10-21) adds the
+synthetic-fixture honesty regressions: an earthquake fixture must never
+report "no USGS catalog earthquake" against its own construction; the null
+fixture's not-supported verdict must be construction-based; synthetic runs
+must not cite real-product correction status; a catalog screen outcome is
+preserved when an event IS supplied.
 
 ### tests/science/detection.test.ts — NEW (remediation)
 Masking/detection bookkeeping, NaN handling, cluster statistics

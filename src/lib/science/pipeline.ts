@@ -426,7 +426,9 @@ export function runPipeline(
     `(median coherence ${summary.coherenceMedian.toFixed(2)}). Reference-region scatter: ±${mm(summary.referenceSigmaM)} mm; ` +
     (ionoFloorM > 0
       ? `the dominant unresolved residual is ionospheric: the product supplies a phase screen but does not apply it to the stored phase, and the ${ionoFloorBasis === 'variation' ? "screen's own spatial variation" : "screen estimate's uncertainty"} corresponds to about ±${mm(ionoFloorM)} mm of LOS range change. Apparent signals below that level cannot be confidently attributed to ground motion from this single pair. `
-      : 'unmodelled atmospheric residuals remain (the product does not remove them from the phase). ') +
+      : ds.isSynthetic
+        ? 'the simulated measurement noise and atmospheric ramp are the only error sources in this demonstration dataset. '
+        : 'unmodelled atmospheric residuals remain (the product does not remove them from the phase). ') +
     `${ccCount > 1 ? `Phase unwrapping split the scene into ${ccCount} regions — treat step-like boundaries with caution.` : 'Phase unwrapping is consistent across the scene (a single component lowers, but does not eliminate, the chance of cycle-jump artefacts).'} ` +
     'A single interferogram cannot separate slow processes from one-off events.';
 

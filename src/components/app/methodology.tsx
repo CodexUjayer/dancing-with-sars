@@ -139,7 +139,7 @@ export function MethodologyDrawer({ trigger }: { trigger: React.ReactNode }) {
                 <li>The Okada port matches the official DC3D reference implementation to &lt; 10⁻⁸ relative error over 24 benchmark geometries × 3 slip modes.</li>
                 <li>Fault placement is calibrated against the 2D analytic screw-dislocation solution; slip senses (sinistral U1⁺, normal U2⁺, opening U3⁺) are verified by trace-jump tests.</li>
                 <li>Synthetic earthquakes are recovered end-to-end to ≈ 2.6 mm MAE against analytic ground truth; the null fixture produces zero false alarms.</li>
-                <li>42 automated tests cover conventions, geodesy, validation gates and the full pipeline.</li>
+                <li>90 automated tests cover conventions, geodesy, validation gates and the full pipeline.</li>
               </ul>
               <p className="text-[11.5px] italic text-[#8A837B]">
                 A passing software test is not equivalent to scientific validation — see docs/validation.md for what

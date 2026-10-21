@@ -257,3 +257,40 @@ Work Log:
 
 Stage Summary:
 - Every confirmed audit finding is fixed or explicitly documented as blocked (Mojave re-analysis: source granule not retained). The application now states from the authoritative source that its measurements are apparent relative LOS range change with uncorrected atmospheric/ionospheric contamination, quantifies that contamination per product, anchors its forward model at the projected epicentre (bit-exact tested), ranks earthquake candidates explicitly, separates detection bookkeeping from classification with an exploratory null-scene screen, and ships strict-TS CI + checksummed data manifest + offline-first tests. No commit or push performed (not authorized).
+
+---
+Task ID: final-pass-baseline
+Agent: main (Z.ai Code)
+Task: MOTUS final pass — baseline before UI simplification + science audit
+
+Work Log:
+- git status: clean tree on main @ e811972
+- bun test: 86 pass / 0 fail, 485 assertions (exit 0)
+- bun run typecheck: exit 0; bun run lint: exit 0
+- dev server running on :3000 (dev.log clean, /api + /api/datasets 200)
+- Datasets: mojave-2026=missing(credential-gated), panama-2026=evidence available, la-2008=real available, 3 synthetic available
+- UI default selection bug: selects datasets[0] = the MISSING Mojave dataset
+- Science audit spot-checks: phase.ts conventions documented vs ATBD/ASF guide; rankEventsForPair explicit; nullScreen labelled exploratory; okada epicentre-anchored (§5 tests pass)
+- VERIFIED DEFECT: synthetic earthquake fixture reports "Earthquake (coseismic deformation): not-supported / No USGS catalog earthquake..." — misleading (cause is known by construction)
+
+Stage Summary:
+- Baseline green; begin PRIORITY 1 UI redesign (page.tsx, ui-bits, results-panel, evidence-viewer, map-panel), then attribution fix for synthetic fixtures.
+
+---
+Task ID: final-pass-complete
+Agent: main (Z.ai Code)
+Task: MOTUS final pass — UI simplification, science audit, verified fixes
+
+Work Log:
+- UI REWRITE (PRIORITY 1):
+  - page.tsx: hero ("Explore how Earth's surface may have moved." + plain intro + "Start an analysis" CTA + 3-step map), numbered Step 1/2/3 sections, dataset cards sorted real-ready → evidence → demo → unavailable with plain ReadinessBadge (icon+text, never color alone), default selection = first real quantitative available dataset (was: the missing Mojave set), honest processing-stage list (real pipeline stages, no fake per-stage completion), Advanced settings + About this data collapsibles, "What MOTUS can and cannot tell you" scope note, mobile order (controls → map → result) via CSS grid placement, map sticky on desktop
+  - results-panel.tsx: restructured to required order — What did we find? (OutcomeBanner: Possible change detected / No change detected above the threshold / Inconclusive, exact honest copy) → How certain are we? → What could explain it? (plain hypothesis badges) → What are the limitations? → Advanced results (collapsible technical evidence: full stats, null screen, correction status, validation, USGS events); new EvidenceResults for Panama with "Real earthquake, real radar data — measurement pending" banner
+  - evidence-viewer.tsx: plain section titles (Official radar images of the area / Radar data pairs that cover the earthquake / Check NASA's data catalog now / What an earthquake model predicts), causation caution
+  - map-panel.tsx: plain legends with color meaning + units ("brown = toward · green = away"), hover readout with direction label, moved rendering chip below zoom controls
+  - ui-bits.tsx: WhatIsThis inline glossary, ReadinessBadge, plain DataClassBadge + HypothesisStatusBadge labels (technical term in title attr), EventRow moved here (breaks results↔evidence circular import), fmtKm2 small-value decimals (0.013 km² no longer shows "0 km²")
+- SCIENCE FIX (verified defect): attribution.ts — synthetic earthquake fixture reported "Earthquake: not-supported / No USGS catalog earthquake" (self-contradiction; cause known by construction). Fix: construction-fact branch for ds.isSynthetic&&ds.truth with truth-peak scan (supported-by-construction for earthquake fixtures, not-supported-by-construction for null fixture); anthro/atmospheric hypotheses get fixture-honest evidence (no real-product GUNW language on synthetic data); methodNote explains demo mode; pipeline.ts reliability narrative for synthetic no longer cites "the product". +4 regression tests.
+- DOCS: methodology test count 42→90; validation.md 86/485→90/498 + new validation row + attribution inventory note.
+- CHECKS: bun test 90 pass/0 fail/498 assertions; tsc --noEmit clean; eslint clean; python3 tools/test_extract_gunw.py 26/26 pass; dev.log clean; agent-browser E2E verified (hero, card sort, LA real run → Inconclusive banner, demo run → Possible change detected + FITS THE EVIDENCE earthquake, Mojave → disabled button + guidance, Panama evidence mode + prediction overlay + MODEL PREDICTION — NOT A MEASUREMENT tag, layer switcher all 4 layers with interpretation text, What-does-this-mean expandable, methodology drawer, 390px no horizontal scroll, footer bottom).
+
+Stage Summary:
+- Working tree ready for review (NOT committed, per instruction). Production build not executed (sandbox forbids `bun run build`) — strict tsc is the substitute check. Mojave real-data reproduction + independent geodetic validation remain outstanding by nature of missing credentials/data.

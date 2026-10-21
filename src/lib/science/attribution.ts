@@ -552,7 +552,37 @@ export function evaluateAttribution(
       );
     }
   } else {
-    if (events.length === 0 && selection.excluded.length > 0) {
+    if (ds.isSynthetic && ds.truth) {
+      // SYNTHETIC FIXTURE with analytic ground truth and no catalog events.
+      // The cause of the signal is fixed by construction, so the catalog-based
+      // screen ("no USGS catalog earthquake near this footprint") would be
+      // actively misleading for an earthquake fixture — it would read as
+      // "this is not an earthquake". State the construction fact instead.
+      // (Fix verified 2026-10-21: final-pass audit finding.)
+      let truthPeakM = 0;
+      const stride = Math.max(1, Math.floor(ds.truth.data.length / 20000));
+      for (let i = 0; i < ds.truth.data.length; i += stride) {
+        const v = ds.truth.data[i];
+        if (Number.isFinite(v) && Math.abs(v) > truthPeakM) truthPeakM = Math.abs(v);
+      }
+      if (truthPeakM > 1e-4) {
+        coseismicStatus = 'supported';
+        coseismicEvidence.push(
+          'Demonstration dataset: the displacement field was GENERATED from a known earthquake ' +
+            `dislocation model (analytic ground truth, peak ${(truthPeakM * 1000).toFixed(0)} mm LOS). ` +
+            'The cause is known by construction — a validation statement, not an attribution inference.',
+          'Catalog-based attribution (USGS event cross-match, forward-model consistency) applies to ' +
+            'real measurements; it is intentionally not exercised on synthetic data.',
+        );
+      } else {
+        coseismicStatus = 'not-supported';
+        coseismicEvidence.push(
+          'Demonstration dataset (null fixture): the ground truth contains zero displacement by ' +
+            'construction, so no coseismic signal exists to attribute. This is a false-alarm control, ' +
+            'not an inference about the Earth.',
+        );
+      }
+    } else if (events.length === 0 && selection.excluded.length > 0) {
       coseismicEvidence.push(
         'No USGS catalog earthquake qualified for this pair (excluded candidates and reasons: ' +
           selection.excluded.map((e) => `${e.id}: ${e.reason}`).join('; ') + ').',
@@ -563,7 +593,7 @@ export function evaluateAttribution(
           'near this footprint.',
       );
     }
-    coseismicStatus = 'not-supported';
+    if (!(ds.isSynthetic && ds.truth)) coseismicStatus = 'not-supported';
   }
   hyp.push({
     id: 'coseismic',
@@ -572,9 +602,11 @@ export function evaluateAttribution(
       'Sudden slip on a fault moves the surface elastically during the time between the two radar acquisitions.',
     status: coseismicStatus,
     evidence: coseismicEvidence,
-    discriminatingObservation:
-      'An independent geodetic or seismic source model of the event, or an interferogram from a ' +
-      'different viewing geometry, would confirm or reject this explanation.',
+    discriminatingObservation: ds.isSynthetic
+      ? 'Not applicable — the ground truth is known exactly for this demonstration dataset (compare it ' +
+        'against the ground-truth check in the advanced results).'
+      : 'An independent geodetic or seismic source model of the event, or an interferogram from a ' +
+        'different viewing geometry, would confirm or reject this explanation.',
   });
 
   // ---- H2: anthropogenic / slow surface motion ------------------------
@@ -585,7 +617,12 @@ export function evaluateAttribution(
       `Detected anomaly covers ${summary.affectedAreaKm2.toFixed(0)} km² with peak apparent LOS motion ` +
         `of ${(summary.maxAwayM * 1000).toFixed(1)} mm away / ${(summary.maxTowardM * 1000).toFixed(1)} mm toward the radar.`,
     );
-    if (events.length === 0 && coseismicStatus === 'not-supported') {
+    if (ds.isSynthetic && ds.truth) {
+      anthroEvidence.push(
+        'Demonstration dataset: alternative-cause screening is not meaningful when the cause is ' +
+          'fixed by construction (see the earthquake hypothesis).',
+      );
+    } else if (events.length === 0 && coseismicStatus === 'not-supported') {
       anthroStatus = 'plausible';
       anthroEvidence.push(
         'No catalogued earthquake coincides with the signal, so non-seismic processes ' +
@@ -622,37 +659,59 @@ export function evaluateAttribution(
   const atmEvidence: string[] = [];
   let atmStatus: Hypothesis['status'] = 'insufficient-evidence';
   const peakMm = Math.max(Math.abs(summary.maxAwayM), Math.abs(summary.maxTowardM)) * 1000;
-  atmEvidence.push(
-    'The product supplies ionospheric and tropospheric correction layers but does NOT apply them ' +
-      'to the stored phase (ASF NISAR GUNW guide), so atmospheric/ionospheric residuals are ' +
-      'structurally present in every GUNW measurement (Hanssen 2001, chapters 6 and 9).',
-  );
-  if (summary.systematicIonoFloorM > 0) {
+  if (ds.isSynthetic) {
+    // Synthetic fixtures simulate their own noise + atmospheric ramp; the
+    // real-product correction-status language does not apply to them.
+    atmEvidence.push(
+      'Demonstration dataset: the simulator adds a small smooth atmospheric ramp and ' +
+        'coherence-consistent measurement noise by construction (src/lib/science/fixtures.ts). ' +
+        'No real atmospheric state is involved, so real-world atmospheric screening is not meaningful here.',
+    );
+    if (detected) {
+      atmEvidence.push(
+        'The detected pattern is the known earthquake signal of the fixture; the simulated ramp is a minor add-on.',
+      );
+    } else {
+      atmStatus = 'plausible';
+      atmEvidence.push(
+        'What remains in this null fixture is exactly the simulated noise + ramp — by construction.',
+      );
+    }
+  } else {
+    atmEvidence.push(
+      'The product supplies ionospheric and tropospheric correction layers but does NOT apply them ' +
+        'to the stored phase (ASF NISAR GUNW guide), so atmospheric/ionospheric residuals are ' +
+        'structurally present in every GUNW measurement (Hanssen 2001, chapters 6 and 9).',
+    );
+  }
+  if (!ds.isSynthetic && summary.systematicIonoFloorM > 0) {
     atmEvidence.push(
       `The ionospheric systematic floor for this pair is ±${(summary.systematicIonoFloorM * 1000).toFixed(0)} mm ` +
         `(from the ${summary.ionoFloorBasis === 'variation' ? "supplied screen's own spatial variation" : "screen estimate's uncertainty"}).`,
     );
   }
-  if (detected) {
-    if (peakMm < ATTRIBUTION_HEURISTICS.atmosphericPeakMm) {
+  if (!ds.isSynthetic) {
+    if (detected) {
+      if (peakMm < ATTRIBUTION_HEURISTICS.atmosphericPeakMm) {
+        atmStatus = 'plausible';
+        atmEvidence.push(
+          `Peak apparent displacement (${peakMm.toFixed(0)} mm) is below the exploratory ` +
+            `${ATTRIBUTION_HEURISTICS.atmosphericPeakMm} mm atmospheric-plausibility value, the order of typical ` +
+            'uncorrected tropospheric residuals; an atmospheric contribution to the whole pattern cannot be excluded.',
+        );
+      } else {
+        atmEvidence.push(
+          `Peak apparent displacement (${peakMm.toFixed(0)} mm) exceeds what residual atmosphere typically ` +
+            'produces; a purely atmospheric origin is unlikely to explain the full amplitude (exploratory judgement).',
+        );
+      }
+    } else {
       atmStatus = 'plausible';
       atmEvidence.push(
-        `Peak apparent displacement (${peakMm.toFixed(0)} mm) is below the exploratory ` +
-          `${ATTRIBUTION_HEURISTICS.atmosphericPeakMm} mm atmospheric-plausibility value, the order of typical ` +
-          'uncorrected tropospheric residuals; an atmospheric contribution to the whole pattern cannot be excluded.',
-      );
-    } else {
-      atmEvidence.push(
-        `Peak apparent displacement (${peakMm.toFixed(0)} mm) exceeds what residual atmosphere typically ` +
-          'produces; a purely atmospheric origin is unlikely to explain the full amplitude (exploratory judgement).',
+        'Sub-threshold spatially smooth variation is exactly what uncorrected atmospheric residuals ' +
+          'look like at this sensitivity.',
       );
     }
-  } else {
-    atmStatus = 'plausible';
-    atmEvidence.push(
-      'Sub-threshold spatially smooth variation is exactly what uncorrected atmospheric residuals ' +
-        'look like at this sensitivity.',
-    );
   }
   hyp.push({
     id: 'atmospheric',
@@ -739,6 +798,10 @@ export function evaluateAttribution(
     forwardModelCheck: forwardModel,
     heuristics: ATTRIBUTION_HEURISTICS,
     methodNote:
+      (ds.isSynthetic
+        ? 'Demonstration dataset: hypotheses state construction facts from the known ground truth ' +
+          'rather than screening outcomes; catalog-based attribution is not exercised on synthetic data. '
+        : '') +
       'Rule-based, evidence-linked screening. Forward-model checks use the Okada (1985) elastic ' +
       'half-space with the USGS moment-tensor nodal plane anchored at the projected epicentre, ' +
       'Wells & Coppersmith (1994) area scaling and Hanks & Kanamori (1979) moment-magnitude ' +
