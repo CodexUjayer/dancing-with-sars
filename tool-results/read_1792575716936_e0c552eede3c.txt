@@ -1,0 +1,884 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→/**
+     4→     4→ * MOTUS — Earth-change intelligence (NASA Space Apps 2026, "Dancing with the SARs").
+     5→     5→ *
+     6→     6→ * FINAL-PASS UI (plain-language redesign):
+     7→     7→ *   The page follows one simple story —
+     8→     8→ *     Step 1 · Choose an area  →  Step 2 · Analyze it  →  Step 3 · Understand the result
+     9→     9→ *   Every screen answers: what am I looking at, what should I do next, what
+    10→    10→ *   does the result mean, and what should I *not* conclude from it. Technical
+    11→    11→ *   detail stays available under "Advanced" sections and the "How it works"
+    12→    12→ *   drawer, so the science remains inspectable.
+    13→    13→ */
+    14→    14→
+    15→    15→import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+    16→    16→import dynamic from 'next/dynamic';
+    17→    17→import { Loader2, Play, RotateCcw, ChevronDown, BookOpen, Check, MapPin, AlertTriangle } from 'lucide-react';
+    18→    18→import { Button } from '@/components/ui/button';
+    19→    19→import { Slider } from '@/components/ui/slider';
+    20→    20→import { Switch } from '@/components/ui/switch';
+    21→    21→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+    22→    22→import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+    23→    23→import { Skeleton } from '@/components/ui/skeleton';
+    24→    24→import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+    25→    25→import { MethodologyDrawer } from '@/components/app/methodology';
+    26→    26→import { QuantitativeResults, EvidenceResults } from '@/components/app/results-panel';
+    27→    27→import {
+    28→    28→  DataClassBadge,
+    29→    29→  MicroLabel,
+    30→    30→  ReadinessBadge,
+    31→    31→  readinessOf,
+    32→    32→  WhatIsThis,
+    33→    33→  fmtDate,
+    34→    34→  fmtDateTime,
+    35→    35→} from '@/components/app/ui-bits';
+    36→    36→import type {
+    37→    37→  AnalysisPayload,
+    38→    38→  DatasetDetail,
+    39→    39→  DatasetListEntry,
+    40→    40→  HealthPayload,
+    41→    41→  PanamaGranule,
+    42→    42→} from '@/components/app/types';
+    43→    43→import type { LayerKind } from '@/components/app/raster-render';
+    44→    44→import { decodeTransport, type DecodedGrids } from '@/components/app/decode';
+    45→    45→import { isEvidenceResult } from '@/components/app/types';
+    46→    46→
+    47→    47→const MapPanel = dynamic(() => import('@/components/app/map-panel'), {
+    48→    48→  ssr: false,
+    49→    49→  loading: () => (
+    50→    50→    <div className="flex min-h-[420px] items-center justify-center rounded-xl border border-[#E7E2DA] bg-white">
+    51→    51→      <Loader2 className="h-5 w-5 animate-spin text-[#B8AFA2]" aria-label="Loading map" />
+    52→    52→    </div>
+    53→    53→  ),
+    54→    54→});
+    55→    55→
+    56→    56→interface AdvancedParams {
+    57→    57→  coherenceThreshold: number;
+    58→    58→  detectionFloor: number;
+    59→    59→  significanceK: number;
+    60→    60→  referenceStrategy: 'farField' | 'fullFrameMedian';
+    61→    61→  detrend: boolean;
+    62→    62→}
+    63→    63→
+    64→    64→const DEFAULT_ADVANCED: AdvancedParams = {
+    65→    65→  coherenceThreshold: 0.5,
+    66→    66→  detectionFloor: 0.01,
+    67→    67→  significanceK: 3,
+    68→    68→  referenceStrategy: 'farField',
+    69→    69→  detrend: false,
+    70→    70→};
+    71→    71→
+    72→    72→/**
+    73→    73→ * Display / default-selection rank: a real, ready, measurable dataset first,
+    74→    74→ * then the real evidence view, then demonstrations, then unavailable data.
+    75→    75→ * Stable, so the registry order is preserved within each class.
+    76→    76→ */
+    77→    77→function readinessRank(d: DatasetListEntry): number {
+    78→    78→  if (d.availability.state !== 'available') return 3;
+    79→    79→  if (d.dataClass === 'synthetic') return 2;
+    80→    80→  if (d.mode === 'evidence') return 1;
+    81→    81→  return 0;
+    82→    82→}
+    83→    83→
+    84→    84→/**
+    85→    85→ * Real processing stages, mirroring src/lib/science/pipeline.ts (Stages A–E).
+    86→    86→ * The server runs them in a single request, so while a run is in flight the
+    87→    87→ * list is shown as "in progress" as a whole — no per-stage completion is
+    88→    88→ * faked. Checkmarks appear only after the result has actually returned.
+    89→    89→ */
+    90→    90→function processingStages(mode: 'quantitative' | 'evidence'): Array<{ label: string; detail: string }> {
+    91→    91→  if (mode === 'evidence') {
+    92→    92→    return [
+    93→    93→      { label: 'Reading the real catalog records', detail: 'Loading the cached NASA and USGS records for the event and the radar data that covers it.' },
+    94→    94→      { label: 'Checking the latest data availability', detail: 'Asking the USGS earthquake catalog for the latest picture of the event sequence.' },
+    95→    95→      { label: 'Computing the earthquake model prediction', detail: 'Calculating the ground movement a standard earthquake model expects, from the published fault information.' },
+    96→    96→    ];
+    97→    97→  }
+    98→    98→  return [
+    99→    99→    { label: 'Checking the radar data', detail: 'Reading the measurement files and setting aside pixels whose signal is too unreliable to measure.' },
+   100→   100→    { label: 'Measuring changes in the radar signal', detail: 'Comparing the two radar images and converting the difference into apparent movement toward or away from the satellite.' },
+   101→   101→    { label: 'Estimating measurement uncertainty', detail: 'Estimating how much of the apparent change could come from measurement noise and uncorrected atmospheric effects.' },
+   102→   102→    { label: 'Checking whether the pattern is a possible real change', detail: 'Flagging areas where the apparent change clearly exceeds the uncertainty, and testing the rule against simulated no-change scenes.' },
+   103→   103→  ];
+   104→   104→}
+   105→   105→
+   106→   106→function layerLabel(l: LayerKind, isPrediction: boolean): string {
+   107→   107→  if (l === 'displacement') return isPrediction ? 'Model prediction' : 'Measured movement';
+   108→   108→  if (l === 'coherence') return 'Signal quality';
+   109→   109→  if (l === 'sigma') return 'Uncertainty';
+   110→   110→  return 'Measured areas';
+   111→   111→}
+   112→   112→
+   113→   113→function layerInterpretation(l: LayerKind, isPrediction: boolean): string {
+   114→   114→  if (l === 'displacement') {
+   115→   115→    return isPrediction
+   116→   116→      ? 'Colors show where a standard earthquake model predicts the ground should have moved. This is a calculation, not a measurement of this event.'
+   117→   117→      : 'Colors show how far each patch of ground appears to have moved toward or away from the satellite between the two radar images. Areas without color could not be measured reliably.';
+   118→   118→  }
+   119→   119→  if (l === 'coherence') return 'Darker areas have a stronger, more reliable radar signal; lighter areas are noisier. Very light areas were excluded from the analysis.';
+   120→   120→  if (l === 'sigma') return 'Darker areas have more uncertain measurements. Changes smaller than this uncertainty cannot be distinguished from noise.';
+   121→   121→  return 'Gray shows where a valid measurement exists. Transparent areas were excluded (no reliable signal).';
+   122→   122→}
+   123→   123→
+   124→   124→export default function Home() {
+   125→   125→  const [datasets, setDatasets] = useState<DatasetListEntry[] | null>(null);
+   126→   126→  const [health, setHealth] = useState<HealthPayload | null>(null);
+   127→   127→  const [selectedId, setSelectedId] = useState<string | null>(null);
+   128→   128→  const [detail, setDetail] = useState<DatasetDetail | null>(null);
+   129→   129→  const [detailEvent, setDetailEvent] = useState<unknown>(null);
+   130→   130→  const [detailGranules, setDetailGranules] = useState<PanamaGranule[]>([]);
+   131→   131→  const [running, setRunning] = useState(false);
+   132→   132→  const [elapsed, setElapsed] = useState(0);
+   133→   133→  const [result, setResult] = useState<AnalysisPayload | null>(null);
+   134→   134→  const [error, setError] = useState<string | null>(null);
+   135→   135→  const [advanced, setAdvanced] = useState<AdvancedParams>(DEFAULT_ADVANCED);
+   136→   136→  const [layer, setLayer] = useState<LayerKind>('displacement');
+   137→   137→  const [opacity, setOpacity] = useState(0.85);
+   138→   138→  const [grids, setGrids] = useState<DecodedGrids | null>(null);
+   139→   139→  const [gridsMeta, setGridsMeta] = useState<Parameters<typeof import('@/components/app/raster-render').renderOverlay>[1] | undefined>(undefined);
+   140→   140→  const [granulePolys, setGranulePolys] = useState<Array<{ granule: PanamaGranule; poly: [number, number][] }>>([]);
+   141→   141→  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+   142→   142→
+   143→   143→  /** Display order: real & ready first, demos next, unavailable last (stable). */
+   144→   144→  const sortedDatasets = useMemo(() => {
+   145→   145→    if (!datasets) return null;
+   146→   146→    return [...datasets].sort((a, b) => readinessRank(a) - readinessRank(b));
+   147→   147→  }, [datasets]);
+   148→   148→
+   149→   149→  useEffect(() => {
+   150→   150→    fetch('/api')
+   151→   151→      .then((r) => r.json())
+   152→   152→      .then((d: HealthPayload) => setHealth(d))
+   153→   153→      .catch(() => setHealth(null));
+   154→   154→    fetch('/api/datasets')
+   155→   155→      .then((r) => r.json())
+   156→   156→      .then((d: { ok: boolean; datasets: DatasetListEntry[] }) => {
+   157→   157→        if (d.ok) {
+   158→   158→          setDatasets(d.datasets);
+   159→   159→          // Default to the first dataset the user can actually analyze — a
+   160→   160→          // real, ready, quantitative dataset when one exists.
+   161→   161→          const ranked = [...d.datasets].sort((a, b) => readinessRank(a) - readinessRank(b));
+   162→   162→          setSelectedId(ranked[0]?.id ?? null);
+   163→   163→        }
+   164→   164→      })
+   165→   165→      .catch(() => setDatasets([]));
+   166→   166→  }, []);
+   167→   167→
+   168→   168→  // Load dataset detail on selection; adopt the dataset's suggested starting
+   169→   169→  // parameters (e.g. a decorrelated ionosphere-dominated pair suggests a lower
+   170→   170→  // coherence threshold — every value stays user-adjustable under Advanced).
+   171→   171→  useEffect(() => {
+   172→   172→    if (!selectedId) return;
+   173→   173→    setResult(null);
+   174→   174→    setError(null);
+   175→   175→    setGrids(null);
+   176→   176→    setGridsMeta(undefined);
+   177→   177→    setGranulePolys([]);
+   178→   178→    setDetail(null);
+   179→   179→    setLayer('displacement');
+   180→   180→    const suggestedCoh = datasets?.find((d) => d.id === selectedId)?.suggestedParams?.coherenceThreshold;
+   181→   181→    setAdvanced((a) => ({
+   182→   182→      ...a,
+   183→   183→      coherenceThreshold: suggestedCoh ?? DEFAULT_ADVANCED.coherenceThreshold,
+   184→   184→    }));
+   185→   185→    fetch(`/api/datasets/${selectedId}`)
+   186→   186→      .then((r) => r.json())
+   187→   187→      .then((d: { ok: boolean; dataset?: DatasetDetail; event?: unknown; granules?: PanamaGranule[] }) => {
+   188→   188→        if (d.ok && d.dataset) {
+   189→   189→          setDetail(d.dataset);
+   190→   190→          setDetailEvent(d.event ?? null);
+   191→   191→          setDetailGranules(d.granules ?? []);
+   192→   192→        }
+   193→   193→      })
+   194→   194→      .catch((e) => setError((e as Error).message));
+   195→   195→  }, [selectedId, datasets]);
+   196→   196→
+   197→   197→  const runAnalysis = useCallback(async () => {
+   198→   198→    if (!selectedId || running) return;
+   199→   199→    setRunning(true);
+   200→   200→    setError(null);
+   201→   201→    setResult(null);
+   202→   202→    setElapsed(0);
+   203→   203→    timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+   204→   204→    try {
+   205→   205→      const res = await fetch('/api/analyses', {
+   206→   206→        method: 'POST',
+   207→   207→        headers: { 'Content-Type': 'application/json' },
+   208→   208→        body: JSON.stringify({
+   209→   209→          datasetId: selectedId,
+   210→   210→          params: {
+   211→   211→            coherenceThreshold: advanced.coherenceThreshold,
+   212→   212→            detectionFloor: advanced.detectionFloor,
+   213→   213→            significanceK: advanced.significanceK,
+   214→   214→            referenceStrategy: advanced.referenceStrategy,
+   215→   215→            detrend: advanced.detrend,
+   216→   216→          },
+   217→   217→        }),
+   218→   218→      });
+   219→   219→      const data = (await res.json()) as { ok: boolean; result?: AnalysisPayload; error?: string };
+   220→   220→      if (!data.ok || !data.result) {
+   221→   221→        setError(data.error ?? 'The analysis failed for an unknown reason.');
+   222→   222→      } else {
+   223→   223→        const r = data.result;
+   224→   224→        setResult(r);
+   225→   225→        if (isEvidenceResult(r)) {
+   226→   226→          setGrids(r.prediction ? decodeTransport(r.prediction) : null);
+   227→   227→          setGridsMeta(r.prediction?.meta);
+   228→   228→          setLayer('displacement');
+   229→   229→        } else {
+   230→   230→          setGrids(decodeTransport(r.transport));
+   231→   231→          setGridsMeta(r.transport.meta);
+   232→   232→          setLayer('displacement');
+   233→   233→        }
+   234→   234→      }
+   235→   235→    } catch (e) {
+   236→   236→      setError((e as Error).message);
+   237→   237→    } finally {
+   238→   238→      if (timerRef.current) clearInterval(timerRef.current);
+   239→   239→      setRunning(false);
+   240→   240→    }
+   241→   241→  }, [selectedId, running, advanced]);
+   242→   242→
+   243→   243→  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+   244→   244→
+   245→   245→  const eventsForMap = useMemo(() => {
+   246→   246→    const fromResult = (() => {
+   247→   247→      if (!result) return [];
+   248→   248→      if (isEvidenceResult(result)) {
+   249→   249→        return result.event ? [result.event, ...result.liveEvents.filter((e) => e.id !== result.event?.id)] : result.liveEvents;
+   250→   250→      }
+   251→   251→      return result.attribution.events;
+   252→   252→    })();
+   253→   253→    // For evidence datasets the primary event is known before any analysis
+   254→   254→    // runs (it is part of the dataset record) — show it on selection.
+   255→   255→    if (detail?.mode === 'evidence' && detailEvent && !fromResult.some((e) => e.id === (detailEvent as { id: string }).id)) {
+   256→   256→      return [detailEvent as never, ...fromResult];
+   257→   257→    }
+   258→   258→    return fromResult;
+   259→   259→  }, [result, detail, detailEvent]);
+   260→   260→
+   261→   261→  const primaryEvent = useMemo(() => {
+   262→   262→    if (result && isEvidenceResult(result)) return result.event;
+   263→   263→    return detailEvent as { id: string } | null ?? null;
+   264→   264→  }, [result, detailEvent]);
+   265→   265→
+   266→   266→  const selectedEntry = datasets?.find((d) => d.id === selectedId) ?? null;
+   267→   267→  const selectedReadiness = selectedEntry
+   268→   268→    ? readinessOf(selectedEntry)
+   269→   269→    : detail
+   270→   270→      ? readinessOf({ dataClass: detail.provenance.dataClass, mode: detail.mode, availability: detail.availability })
+   271→   271→      : null;
+   272→   272→  const isPredictionLayer =
+   273→   273→    !!result && isEvidenceResult(result) && !!result.prediction && layer === 'displacement';
+   274→   274→  const stages = detail ? processingStages(detail.mode) : processingStages('quantitative');
+   275→   275→  const anyReady = (sortedDatasets ?? []).some((d) => d.availability.state === 'available');
+   276→   276→
+   277→   277→  const scrollToChoose = () => {
+   278→   278→    document.getElementById('choose-area')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+   279→   279→  };
+   280→   280→
+   281→   281→  return (
+   282→   282→    <div className="flex min-h-screen flex-col bg-[#FAF9F6]">
+   283→   283→      <header className="sticky top-0 z-40 border-b border-[#E7E2DA] bg-white/95 backdrop-blur-sm">
+   284→   284→        <div className="mx-auto flex h-14 max-w-[1240px] items-center justify-between gap-4 px-4 sm:px-6">
+   285→   285→          <div className="flex items-baseline gap-3">
+   286→   286→            <span className="text-[17px] font-semibold tracking-[0.02em] text-[#1C1A17]">MOTUS</span>
+   287→   287→            <span className="hidden text-[11px] text-[#8A837B] sm:inline">
+   288→   288→              See how Earth&apos;s surface may have moved · NASA Space Apps 2026
+   289→   289→            </span>
+   290→   290→          </div>
+   291→   291→          <div className="flex items-center gap-1.5">
+   292→   292→            <MethodologyDrawer
+   293→   293→              trigger={
+   294→   294→                <Button variant="outline" size="sm" className="ml-1 h-7 gap-1.5 rounded-full border-[#D8D2C6] px-3 text-[11px] font-normal text-[#4A443C] hover:bg-[#F7F4EE]">
+   295→   295→                  <BookOpen className="h-3.5 w-3.5" aria-hidden />
+   296→   296→                  How it works
+   297→   297→                </Button>
+   298→   298→              }
+   299→   299→            />
+   300→   300→          </div>
+   301→   301→        </div>
+   302→   302→      </header>
+   303→   303→
+   304→   304→      <main className="mx-auto w-full max-w-[1240px] flex-1 px-4 py-8 sm:px-6 sm:py-10">
+   305→   305→        {/* ---------- Hero: what is this, what can I do here ---------- */}
+   306→   306→        <section aria-label="Introduction" className="mb-10 max-w-3xl">
+   307→   307→          <h1 className="text-[26px] font-semibold leading-8 tracking-[-0.01em] text-[#1C1A17] sm:text-[30px] sm:leading-9">
+   308→   308→            Explore how Earth&apos;s surface may have moved.
+   309→   309→          </h1>
+   310→   310→          <p className="mt-3 max-w-2xl text-[14px] leading-6 text-[#4A443C]">
+   311→   311→            MOTUS examines radar measurements taken from space to look for changes in Earth&apos;s
+   312→   312→            surface. It can compare an observed pattern with earthquake models, but it cannot
+   313→   313→            always tell what caused a change — and it will say so when it can&apos;t.
+   314→   314→          </p>
+   315→   315→          <div className="mt-5 flex flex-wrap items-center gap-3">
+   316→   316→            <Button
+   317→   317→              onClick={scrollToChoose}
+   318→   318→              className="h-11 gap-2 rounded-lg bg-[#1C1A17] px-5 text-[13.5px] font-medium text-white hover:bg-[#33302B]"
+   319→   319→            >
+   320→   320→              <Play className="h-4 w-4" aria-hidden />
+   321→   321→              Start an analysis
+   322→   322→            </Button>
+   323→   323→            <span className="text-[12px] text-[#8A837B]">
+   324→   324→              Free to explore — a demonstration dataset is always available.
+   325→   325→            </span>
+   326→   326→          </div>
+   327→   327→          <ol className="mt-7 grid gap-2 text-[12px] text-[#6F6862] sm:grid-cols-3 sm:gap-4" aria-label="How to use MOTUS">
+   328→   328→            {[
+   329→   329→              ['1', 'Choose an area', 'Pick a study area below. Labels say whether the data are real, a demo, or unavailable.'],
+   330→   330→              ['2', 'Analyze it', 'One click runs the full analysis. Advanced settings stay out of the way until you want them.'],
+   331→   331→              ['3', 'Understand the result', 'What was found, how certain it is, what could explain it, and what it does not prove.'],
+   332→   332→            ].map(([n, title, desc]) => (
+   333→   333→              <li key={n} className="flex gap-2.5 rounded-xl border border-[#EFEAE2] bg-white p-3.5">
+   334→   334→                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#1C1A17] font-mono text-[10px] font-semibold text-white" aria-hidden>
+   335→   335→                  {n}
+   336→   336→                </span>
+   337→   337→                <span>
+   338→   338→                  <span className="block text-[12.5px] font-semibold text-[#1C1A17]">{title}</span>
+   339→   339→                  <span className="mt-0.5 block leading-4 text-[#8A837B]">{desc}</span>
+   340→   340→                </span>
+   341→   341→              </li>
+   342→   342→            ))}
+   343→   343→          </ol>
+   344→   344→        </section>
+   345→   345→
+   346→   346→        {/* ---------- Step 1 · Choose an area ---------- */}
+   347→   347→        <section id="choose-area" aria-label="Step 1 — choose an area" className="mb-8 scroll-mt-20">
+   348→   348→          <StepHeader
+   349→   349→            n={1}
+   350→   350→            title="Choose an area"
+   351→   351→            note="Each card explains what the data are and whether you can run an analysis right now."
+   352→   352→          />
+   353→   353→          {datasets === null ? (
+   354→   354→            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+   355→   355→              {Array.from({ length: 6 }, (_, i) => (
+   356→   356→                <div key={i} className="h-[150px] animate-pulse rounded-xl border border-[#EFEAE2] bg-white" />
+   357→   357→              ))}
+   358→   358→            </div>
+   359→   359→          ) : datasets.length === 0 ? (
+   360→   360→            <div className="rounded-xl border border-[#E7D9B8] bg-[#FCF8EE] p-5 text-[13px] leading-5 text-[#7A6438]" role="alert">
+   361→   361→              The dataset list could not be loaded. Please reload the page and try again.
+   362→   362→            </div>
+   363→   363→          ) : (
+   364→   364→            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+   365→   365→              {sortedDatasets!.map((d) => {
+   366→   366→                const ready = readinessOf(d);
+   367→   367→                return (
+   368→   368→                  <button
+   369→   369→                    key={d.id}
+   370→   370→                    type="button"
+   371→   371→                    onClick={() => setSelectedId(d.id)}
+   372→   372→                    aria-pressed={d.id === selectedId}
+   373→   373→                    className={`h-fit rounded-xl border bg-white p-4 text-left transition-all duration-150 ${
+   374→   374→                      d.id === selectedId
+   375→   375→                        ? 'border-[1.5px] border-[#1C1A17] shadow-[0_1px_8px_rgba(28,26,23,0.08)]'
+   376→   376→                        : 'border-[#E7E2DA] hover:border-[#B8AFA2]'
+   377→   377→                    }`}
+   378→   378→                  >
+   379→   379→                    <div className="flex items-center justify-between gap-2">
+   380→   380→                      <ReadinessBadge d={d} />
+   381→   381→                    </div>
+   382→   382→                    <div className="mt-2 line-clamp-2 min-h-[2.5em] text-[13px] font-medium leading-[1.25em] text-[#1C1A17]">
+   383→   383→                      {d.title}
+   384→   384→                    </div>
+   385→   385→                    <p className="mt-1 line-clamp-2 text-[11.5px] leading-4 text-[#8A837B]">{ready.detail}</p>
+   386→   386→                    <div className="mt-2 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.04em] text-[#8A837B]">
+   387→   387→                      <MapPin className="h-3 w-3 shrink-0" aria-hidden />
+   388→   388→                      {d.temporalBaselineDays > 0
+   389→   389→                        ? `${d.temporalBaselineDays}-day pair · ${fmtDate(d.referenceTime)} → ${fmtDate(d.secondaryTime)}`
+   390→   390→                        : 'time range shown after download'}
+   391→   391→                    </div>
+   392→   392→                  </button>
+   393→   393→                );
+   394→   394→              })}
+   395→   395→            </div>
+   396→   396→          )}
+   397→   397→        </section>
+   398→   398→
+   399→   399→        {/* ---------- Workspace: Step 2 (run) · map · Step 3 (result) ---------- */}
+   400→   400→        <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1.85fr)_minmax(0,1fr)]">
+   401→   401→          {/* Step 2 — Run the analysis (first on mobile, right column on desktop) */}
+   402→   402→          <section aria-label="Step 2 — run the analysis" className="order-1 self-start rounded-xl border border-[#E7E2DA] bg-white p-5 lg:order-2 lg:col-start-2 lg:row-start-1">
+   403→   403→            <StepHeader n={2} title="Run the analysis" note="One click. The default settings are safe; technical options are hidden below." inside />
+   404→   404→            {detail ? (
+   405→   405→              <>
+   406→   406→                <div className="mt-4 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3.5">
+   407→   407→                  <div className="flex flex-wrap items-center gap-2">
+   408→   408→                    <DataClassBadge dataClass={detail.provenance.dataClass} mode={detail.mode} />
+   409→   409→                  </div>
+   410→   410→                  <h2 className="mt-2 text-[14.5px] font-semibold leading-5 text-[#1C1A17]">{detail.title}</h2>
+   411→   411→                  <p className="mt-1 text-[12.5px] leading-[1.4rem] text-[#6F6862]">{detail.blurb}</p>
+   412→   412→                </div>
+   413→   413→
+   414→   414→                {detail.availability.state !== 'available' && (
+   415→   415→                  <div className="mt-3 rounded-lg border border-[#E5C4B7] bg-[#FBF3EF] p-3.5" role="alert">
+   416→   416→                    <p className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[#9E3B2C]">
+   417→   417→                      <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
+   418→   418→                      {selectedReadiness?.label} — analysis cannot run yet
+   419→   419→                    </p>
+   420→   420→                    <p className="mt-1.5 text-[12px] leading-[1.4rem] text-[#9E3B2C]">
+   421→   421→                      {detail.availability.explanation}
+   422→   422→                    </p>
+   423→   423→                    {anyReady && (
+   424→   424→                      <p className="mt-2 text-[12px] leading-[1.4rem] text-[#9E3B2C]">
+   425→   425→                        Tip: choose a <strong>Ready to analyze</strong> or <strong>Demo data</strong> area above — those work right now.
+   426→   426→                      </p>
+   427→   427→                    )}
+   428→   428→                  </div>
+   429→   429→                )}
+   430→   430→
+   431→   431→                <Button
+   432→   432→                  onClick={runAnalysis}
+   433→   433→                  disabled={running || detail.availability.state !== 'available'}
+   434→   434→                  className="mt-4 h-11 w-full gap-2 rounded-lg bg-[#1C1A17] text-[13.5px] font-medium text-white hover:bg-[#33302B] disabled:opacity-60"
+   435→   435→                >
+   436→   436→                  {running ? (
+   437→   437→                    <>
+   438→   438→                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+   439→   439→                      Analyzing… {elapsed}s
+   440→   440→                    </>
+   441→   441→                  ) : detail.availability.state !== 'available' ? (
+   442→   442→                    <>
+   443→   443→                      <AlertTriangle className="h-4 w-4" aria-hidden />
+   444→   444→                      Data unavailable — choose another area
+   445→   445→                    </>
+   446→   446→                  ) : (
+   447→   447→                    <>
+   448→   448→                      <Play className="h-4 w-4" aria-hidden />
+   449→   449→                      Analyze this area
+   450→   450→                    </>
+   451→   451→                  )}
+   452→   452→                </Button>
+   453→   453→                {detail.availability.state === 'available' && (
+   454→   454→                  <p className="mt-2 text-center text-[11px] leading-4 text-[#8A837B]">
+   455→   455→                    {detail.mode === 'evidence'
+   456→   456→                      ? 'Assembles the real catalog records, official imagery and the model prediction.'
+   457→   457→                      : detail.provenance.dataClass === 'real'
+   458→   458→                        ? 'Typically a few seconds; cross-checking earthquake records can take up to ~20 s.'
+   459→   459→                        : 'Typically a few seconds on demonstration data.'}
+   460→   460→                  </p>
+   461→   461→                )}
+   462→   462→
+   463→   463→                {running && (
+   464→   464→                  <div className="mt-4 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3.5" aria-live="polite">
+   465→   465→                    <p className="flex items-center gap-2 text-[12.5px] font-medium text-[#1C1A17]">
+   466→   466→                      <Loader2 className="h-3.5 w-3.5 animate-spin text-[#B08D57]" aria-hidden />
+   467→   467→                      Running the analysis
+   468→   468→                    </p>
+   469→   469→                    <p className="mt-1 text-[11px] leading-4 text-[#8A837B]">
+   470→   470→                      The server runs all of the steps below in one pass — they complete together when the
+   471→   471→                      result returns.
+   472→   472→                    </p>
+   473→   473→                    <ul className="mt-2.5 space-y-2">
+   474→   474→                      {stages.map((s) => (
+   475→   475→                        <li key={s.label} className="flex gap-2.5">
+   476→   476→                          <span className="mt-1 h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[#B08D57]" aria-hidden />
+   477→   477→                          <span>
+   478→   478→                            <span className="block text-[12px] font-medium leading-4 text-[#4A443C]">{s.label}</span>
+   479→   479→                            <span className="mt-0.5 block text-[11px] leading-4 text-[#8A837B]">{s.detail}</span>
+   480→   480→                          </span>
+   481→   481→                        </li>
+   482→   482→                      ))}
+   483→   483→                    </ul>
+   484→   484→                  </div>
+   485→   485→                )}
+   486→   486→
+   487→   487→                <Collapsible className="mt-4 border-t border-[#EFEAE2] pt-3">
+   488→   488→                  <CollapsibleTrigger className="group flex w-full items-center justify-between text-[12px] text-[#6F6862] hover:text-[#1C1A17]">
+   489→   489→                    <span>Advanced settings</span>
+   490→   490→                    <ChevronDown className="h-3.5 w-3.5 transition-transform duration-150 group-data-[state=open]:rotate-180" aria-hidden />
+   491→   491→                  </CollapsibleTrigger>
+   492→   492→                  <CollapsibleContent className="space-y-4 pt-3.5">
+   493→   493→                    <p className="text-[11px] leading-4 text-[#8A837B]">
+   494→   494→                      These control how strictly the analysis flags changes. The defaults are sensible;
+   495→   495→                      change them only if you know why.
+   496→   496→                    </p>
+   497→   497→                    <div>
+   498→   498→                      <div className="mb-1.5 flex items-center justify-between">
+   499→   499→                        <MicroLabel>
+   500→   500→                          Signal-quality threshold
+   501→   501→                          <span className="ml-1.5 font-mono text-[9px] normal-case tracking-normal" title="Technical name: coherence threshold">(coherence)</span>
+   502→   502→                        </MicroLabel>
+   503→   503→                        <span className="font-mono text-[11px] tabular-nums text-[#4A443C]">{advanced.coherenceThreshold.toFixed(2)}</span>
+   504→   504→                      </div>
+   505→   505→                      <Slider
+   506→   506→                        value={[advanced.coherenceThreshold]}
+   507→   507→                        min={0.05}
+   508→   508→                        max={0.9}
+   509→   509→                        step={0.05}
+   510→   510→                        onValueChange={(v) => setAdvanced((a) => ({ ...a, coherenceThreshold: v[0] }))}
+   511→   511→                        aria-label="Coherence threshold"
+   512→   512→                      />
+   513→   513→                      <p className="mt-1.5 text-[10.5px] leading-3.5 text-[#8A837B]">
+   514→   514→                        Pixels with a signal-quality (coherence) score below this are excluded as too unreliable to measure.
+   515→   515→                      </p>
+   516→   516→                      {(() => {
+   517→   517→                        const sugg = selectedEntry?.suggestedParams?.coherenceThreshold;
+   518→   518→                        if (sugg === undefined || Math.abs(sugg - advanced.coherenceThreshold) < 1e-9) return null;
+   519→   519→                        return (
+   520→   520→                          <p className="mt-1.5 text-[10.5px] leading-3 text-[#8A837B]">
+   521→   521→                            Suggested starting value for this scene: {sugg.toFixed(2)} — the dataset notes explain why.
+   522→   522→                          </p>
+   523→   523→                        );
+   524→   524→                      })()}
+   525→   525→                    </div>
+   526→   526→                    <div className="flex items-center justify-between gap-3">
+   527→   527→                      <MicroLabel>
+   528→   528→                        Minimum change to flag
+   529→   529→                        <span className="ml-1.5 font-mono text-[9px] normal-case tracking-normal" title="Technical name: detection floor">(detection floor)</span>
+   530→   530→                      </MicroLabel>
+   531→   531→                      <Select
+   532→   532→                        value={String(advanced.detectionFloor)}
+   533→   533→                        onValueChange={(v) => setAdvanced((a) => ({ ...a, detectionFloor: Number(v) }))}
+   534→   534→                      >
+   535→   535→                        <SelectTrigger className="h-8 w-32 rounded-md border-[#D8D2C6] text-[12px]" aria-label="Detection floor">
+   536→   536→                          <SelectValue />
+   537→   537→                        </SelectTrigger>
+   538→   538→                        <SelectContent>
+   539→   539→                          {['0.005', '0.01', '0.02', '0.05'].map((v) => (
+   540→   540→                            <SelectItem key={v} value={v}>{(Number(v) * 1000).toFixed(0)} mm</SelectItem>
+   541→   541→                          ))}
+   542→   542→                        </SelectContent>
+   543→   543→                      </Select>
+   544→   544→                    </div>
+   545→   545→                    <div className="flex items-center justify-between gap-3">
+   546→   546→                      <MicroLabel>
+   547→   547→                        Strictness
+   548→   548→                        <span className="ml-1.5 font-mono text-[9px] normal-case tracking-normal" title="Technical name: significance k·σ">(k·σ)</span>
+   549→   549→                      </MicroLabel>
+   550→   550→                      <Select
+   551→   551→                        value={String(advanced.significanceK)}
+   552→   552→                        onValueChange={(v) => setAdvanced((a) => ({ ...a, significanceK: Number(v) }))}
+   553→   553→                      >
+   554→   554→                        <SelectTrigger className="h-8 w-20 rounded-md border-[#D8D2C6] text-[12px]" aria-label="Significance k">
+   555→   555→                          <SelectValue />
+   556→   556→                        </SelectTrigger>
+   557→   557→                        <SelectContent>
+   558→   558→                          {['2', '3', '4'].map((v) => (
+   559→   559→                            <SelectItem key={v} value={v}>{v}σ {v === '3' ? '(default)' : ''}</SelectItem>
+   560→   560→                          ))}
+   561→   561→                        </SelectContent>
+   562→   562→                      </Select>
+   563→   563→                    </div>
+   564→   564→                    <div className="flex items-center justify-between gap-3">
+   565→   565→                      <MicroLabel>
+   566→   566→                        Zero point
+   567→   567→                        <span className="ml-1.5 font-mono text-[9px] normal-case tracking-normal" title="Technical name: reference region strategy">(reference)</span>
+   568→   568→                      </MicroLabel>
+   569→   569→                      <Select
+   570→   570→                        value={advanced.referenceStrategy}
+   571→   571→                        onValueChange={(v) => setAdvanced((a) => ({ ...a, referenceStrategy: v as AdvancedParams['referenceStrategy'] }))}
+   572→   572→                      >
+   573→   573→                        <SelectTrigger className="h-8 w-44 rounded-md border-[#D8D2C6] text-[12px]" aria-label="Reference region">
+   574→   574→                          <SelectValue />
+   575→   575→                        </SelectTrigger>
+   576→   576→                        <SelectContent>
+   577→   577→                          <SelectItem value="farField">quiet frame edge (default)</SelectItem>
+   578→   578→                          <SelectItem value="fullFrameMedian">whole-frame median</SelectItem>
+   579→   579→                        </SelectContent>
+   580→   580→                      </Select>
+   581→   581→                    </div>
+   582→   582→                    <div className="flex items-center justify-between gap-3">
+   583→   583→                      <div>
+   584→   584→                        <MicroLabel>Remove tilted background</MicroLabel>
+   585→   585→                        <p className="mt-0.5 text-[10.5px] leading-3 text-[#8A837B]">can also remove real motion — off by default</p>
+   586→   586→                      </div>
+   587→   587→                      <Switch
+   588→   588→                        checked={advanced.detrend}
+   589→   589→                        onCheckedChange={(c) => setAdvanced((a) => ({ ...a, detrend: c }))}
+   590→   590→                        aria-label="Planar detrend"
+   591→   591→                      />
+   592→   592→                    </div>
+   593→   593→                    <Button
+   594→   594→                      variant="ghost"
+   595→   595→                      size="sm"
+   596→   596→                      onClick={() => setAdvanced({
+   597→   597→                        ...DEFAULT_ADVANCED,
+   598→   598→                        coherenceThreshold:
+   599→   599→                          selectedEntry?.suggestedParams?.coherenceThreshold ?? DEFAULT_ADVANCED.coherenceThreshold,
+   600→   600→                      })}
+   601→   601→                      className="h-7 gap-1.5 px-2 text-[11px] font-normal text-[#8A837B] hover:text-[#1C1A17]"
+   602→   602→                    >
+   603→   603→                      <RotateCcw className="h-3 w-3" aria-hidden /> Reset to defaults
+   604→   604→                    </Button>
+   605→   605→                  </CollapsibleContent>
+   606→   606→                </Collapsible>
+   607→   607→
+   608→   608→                <DatasetDetailsCollapsible detail={detail} />
+   609→   609→              </>
+   610→   610→            ) : (
+   611→   611→              <div className="mt-4 space-y-3">
+   612→   612→                <Skeleton className="h-20 w-full" />
+   613→   613→                <Skeleton className="h-11 w-full" />
+   614→   614→                <Skeleton className="h-16 w-full" />
+   615→   615→              </div>
+   616→   616→            )}
+   617→   617→          </section>
+   618→   618→
+   619→   619→          {/* Map: second on mobile, left column spanning both rows on desktop */}
+   620→   620→          <section aria-label="Study area map" className="order-2 lg:order-1 lg:col-start-1 lg:row-span-2 lg:row-start-1">
+   621→   621→            {detail ? (
+   622→   622→              <div className="lg:sticky lg:top-20">
+   623→   623→                <MapPanel
+   624→   624→                  key={detail.id}
+   625→   625→                  dataset={detail}
+   626→   626→                  grids={grids}
+   627→   627→                  gridsMeta={gridsMeta}
+   628→   628→                  layer={layer}
+   629→   629→                  opacity={opacity}
+   630→   630→                  events={eventsForMap as never}
+   631→   631→                  primaryEvent={primaryEvent as never}
+   632→   632→                  granulePolys={granulePolys}
+   633→   633→                />
+   634→   634→                {grids && detail && (
+   635→   635→                  <div className="mt-3 rounded-xl border border-[#E7E2DA] bg-white px-3.5 py-3">
+   636→   636→                    <div role="tablist" aria-label="Map layer" className="flex flex-wrap overflow-hidden rounded-md border border-[#E7E2DA]">
+   637→   637→                      {(['displacement', 'coherence', 'sigma', 'coverage'] as LayerKind[]).map((l) => (
+   638→   638→                        <button
+   639→   639→                          key={l}
+   640→   640→                          role="tab"
+   641→   641→                          aria-selected={layer === l}
+   642→   642→                          onClick={() => setLayer(l)}
+   643→   643→                          className={`flex-1 px-3 py-1.5 text-[11.5px] transition-colors ${
+   644→   644→                            layer === l ? 'bg-[#1C1A17] text-white' : 'bg-white text-[#6F6862] hover:bg-[#F7F4EE]'
+   645→   645→                          }`}
+   646→   646→                        >
+   647→   647→                          {layerLabel(l, isPredictionLayer)}
+   648→   648→                        </button>
+   649→   649→                      ))}
+   650→   650→                    </div>
+   651→   651→                    {layer === 'displacement' && (
+   652→   652→                      <label className="mt-2.5 flex items-center gap-2 text-[11px] text-[#8A837B]">
+   653→   653→                        Layer opacity
+   654→   654→                        <Slider
+   655→   655→                          value={[Math.round(opacity * 100)]}
+   656→   656→                          min={40}
+   657→   657→                          max={100}
+   658→   658→                          step={5}
+   659→   659→                          onValueChange={(v) => setOpacity(v[0] / 100)}
+   660→   660→                          className="w-24"
+   661→   661→                          aria-label="Layer opacity"
+   662→   662→                        />
+   663→   663→                        <span className="w-8 font-mono tabular-nums text-[#4A443C]">{Math.round(opacity * 100)}%</span>
+   664→   664→                      </label>
+   665→   665→                    )}
+   666→   666→                    <p className="mt-2.5 text-[11.5px] leading-4 text-[#6F6862]">
+   667→   667→                      {layerInterpretation(layer, isPredictionLayer)}
+   668→   668→                    </p>
+   669→   669→                    {isPredictionLayer && (
+   670→   670→                      <p className="mt-1.5 text-[10.5px] font-medium uppercase tracking-[0.06em] text-[#8F4A2B]">
+   671→   671→                        Model prediction — not a measurement
+   672→   672→                      </p>
+   673→   673→                    )}
+   674→   674→                  </div>
+   675→   675→                )}
+   676→   676→                {!grids && (
+   677→   677→                  <p className="mt-3 rounded-xl border border-[#E7E2DA] bg-white px-3.5 py-3 text-[11.5px] leading-4 text-[#6F6862]">
+   678→   678→                    This is the selected study area. After you run the analysis, the measurements appear
+   679→   679→                    here as colors on the map.
+   680→   680→                  </p>
+   681→   681→                )}
+   682→   682→              </div>
+   683→   683→            ) : (
+   684→   684→              <div className="flex min-h-[420px] items-center justify-center rounded-xl border border-[#E7E2DA] bg-white">
+   685→   685→                <Loader2 className="h-5 w-5 animate-spin text-[#B8AFA2]" aria-label="Loading" />
+   686→   686→              </div>
+   687→   687→            )}
+   688→   688→          </section>
+   689→   689→
+   690→   690→          {/* Step 3 — Understand the result (below step 2 on mobile, right column on desktop) */}
+   691→   691→          <section aria-label="Step 3 — understand the result" className="order-3 lg:order-2 lg:col-start-2 lg:row-start-2">
+   692→   692→            {error && (
+   693→   693→              <div className="rounded-xl border border-[#E7E2DA] bg-white p-5">
+   694→   694→                <Alert variant="destructive" className="rounded-lg border-[#E5C4B7] bg-[#FBF3EF] text-[#9E3B2C]">
+   695→   695→                  <AlertTitle>The analysis could not be completed</AlertTitle>
+   696→   696→                  <AlertDescription className="text-[12px] leading-[1.4rem] text-[#9E3B2C]">{error}</AlertDescription>
+   697→   697→                </Alert>
+   698→   698→              </div>
+   699→   699→            )}
+   700→   700→            {result && detail && (
+   701→   701→              <div className="rounded-xl border border-[#E7E2DA] bg-white p-5">
+   702→   702→                <StepHeader n={3} title="Understand the result" note="Read this top to bottom: the finding, the certainty, possible explanations, and the limits." inside />
+   703→   703→                <div className="mt-4">
+   704→   704→                  {isEvidenceResult(result) ? (
+   705→   705→                    <EvidenceResults result={result} onGranulePolys={setGranulePolys} />
+   706→   706→                  ) : (
+   707→   707→                    <QuantitativeResults result={result} />
+   708→   708→                  )}
+   709→   709→                </div>
+   710→   710→              </div>
+   711→   711→            )}
+   712→   712→            {!result && !error && !running && detail && (
+   713→   713→              <div className="rounded-xl border border-dashed border-[#D8D2C6] bg-white/60 p-6 text-center">
+   714→   714→                <p className="text-[13px] font-medium text-[#4A443C]">No result yet</p>
+   715→   715→                <p className="mx-auto mt-1.5 max-w-xs text-[12px] leading-[1.45rem] text-[#8A837B]">
+   716→   716→                  Run the analysis above (step 2). When it finishes, the result appears here —
+   717→   717→                  what was found, how certain it is, and what could explain it.
+   718→   718→                </p>
+   719→   719→              </div>
+   720→   720→            )}
+   721→   721→          </section>
+   722→   722→        </div>
+   723→   723→
+   724→   724→        {/* ---------- Honest scope note ---------- */}
+   725→   725→        <section aria-label="About the results" className="mt-10 rounded-xl border border-[#E7E2DA] bg-white p-5">
+   726→   726→          <h2 className="text-[14px] font-semibold text-[#1C1A17]">What MOTUS can and cannot tell you</h2>
+   727→   727→          <ul className="mt-2.5 grid gap-2 text-[12.5px] leading-[1.45rem] text-[#6F6862] sm:grid-cols-2">
+   728→   728→            <li className="flex gap-2">
+   729→   729→              <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#2C5F58]" aria-hidden />
+   730→   730→              <span>It measures <em>apparent</em> movement toward or away from the satellite — one viewing direction, not a full 3-D motion.</span>
+   731→   731→            </li>
+   732→   732→            <li className="flex gap-2">
+   733→   733→              <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#2C5F58]" aria-hidden />
+   734→   734→              <span>It compares each pattern with earthquake records and models — a consistency check, not proof of cause.</span>
+   735→   735→            </li>
+   736→   736→            <li className="flex gap-2">
+   737→   737→              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 shrink-0 text-[#B08D57]" aria-hidden />
+   738→   738→              <span>It cannot always separate real ground motion from atmospheric effects in the radar signal.</span>
+   739→   739→            </li>
+   740→   740→            <li className="flex gap-2">
+   741→   741→              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#B08D57]" aria-hidden />
+   742→   742→              <span>One measurement pair cannot distinguish slow ongoing processes from one-off events.</span>
+   743→   743→            </li>
+   744→   744→          </ul>
+   745→   745→          <p className="mt-3 text-[12px] text-[#8A837B]">
+   746→   746→            Radar terminology is explained where it appears — look for{' '}
+   747→   747→            <WhatIsThis label="&ldquo;What does this mean?&rdquo;">These expandable notes define technical terms such as coherence (how consistently the radar signal matches between observations), interferogram (a map made by comparing two radar observations), and LOS displacement (movement toward or away from the satellite&apos;s viewing direction).</WhatIsThis>
+   748→   748→          </p>
+   749→   749→        </section>
+   750→   750→      </main>
+   751→   751→
+   752→   752→      <footer className="mt-auto border-t border-[#E7E2DA] bg-white">
+   753→   753→        <div className="mx-auto max-w-[1240px] px-4 py-5 sm:px-6">
+   754→   754→          <p className="text-[11px] leading-4 text-[#8A837B]">
+   755→   755→            Data: NASA CMR · ASF DAAC · USGS ComCat · NISAR sample products (ALOS PALSAR via the NISAR SDS).
+   756→   756→            MOTUS is a scientific demonstration for the NASA Space Apps Challenge 2026 — not an operational service.
+   757→   757→            Demonstration datasets are clearly labelled and are not observations of the Earth.
+   758→   758→            {health && !health.capabilities.liveUsgs && ' (Live earthquake catalog currently unreachable — cached records are used.)'}
+   759→   759→          </p>
+   760→   760→        </div>
+   761→   761→      </footer>
+   762→   762→    </div>
+   763→   763→  );
+   764→   764→}
+   765→   765→
+   766→   766→/** Numbered step heading used across the page. */
+   767→   767→function StepHeader({ n, title, note, inside }: { n: 1 | 2 | 3; title: string; note?: string; inside?: boolean }) {
+   768→   768→  return (
+   769→   769→    <div className={inside ? '' : 'mb-4'}>
+   770→   770→      <div className="flex items-center gap-2.5">
+   771→   771→        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#1C1A17] font-mono text-[11px] font-semibold text-white" aria-hidden>
+   772→   772→          {n}
+   773→   773→        </span>
+   774→   774→        <h2 className="text-[16px] font-semibold tracking-[-0.005em] text-[#1C1A17]">{title}</h2>
+   775→   775→      </div>
+   776→   776→      {note && <p className="mt-1 pl-[34px] text-[12px] leading-[1.45rem] text-[#8A837B]">{note}</p>}
+   777→   777→    </div>
+   778→   778→  );
+   779→   779→}
+   780→   780→
+   781→   781→/** "About this data" — technical provenance behind a collapsible, off the default path. */
+   782→   782→function DatasetDetailsCollapsible({ detail }: { detail: DatasetDetail }) {
+   783→   783→  const [open, setOpen] = useState(false);
+   784→   784→  const p = detail.provenance;
+   785→   785→  return (
+   786→   786→    <Collapsible open={open} onOpenChange={setOpen} className="mt-4 border-t border-[#EFEAE2] pt-3">
+   787→   787→      <CollapsibleTrigger className="group flex w-full items-center justify-between text-[12px] text-[#6F6862] hover:text-[#1C1A17]">
+   788→   788→        <span>About this data</span>
+   789→   789→        <ChevronDown className="h-3.5 w-3.5 transition-transform duration-150 group-data-[state=open]:rotate-180" aria-hidden />
+   790→   790→      </CollapsibleTrigger>
+   791→   791→      <CollapsibleContent className="pt-3">
+   792→   792→        <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+   793→   793→          <Fact label="Sensor" value={p.platform} />
+   794→   794→          <Fact label="Product" value={p.productType} />
+   795→   795→          {p.referenceTime && <Fact label="Earlier image" value={fmtDateTime(p.referenceTime)} mono />}
+   796→   796→          {p.secondaryTime && <Fact label="Later image" value={fmtDateTime(p.secondaryTime)} mono />}
+   797→   797→          {detail.geometry && (
+   798→   798→            <>
+   799→   799→              <Fact label="Radar wavelength" value={`${(detail.geometry.wavelength * 100).toFixed(1)} cm (L band)`} mono />
+   800→   800→              <Fact label="Viewing angle" value={`${detail.geometry.incidenceAngleDeg.toFixed(1)}° from vertical`} mono />
+   801→   801→              <Fact label="Orbit / view" value={`${detail.geometry.passDirection} pass · ${detail.geometry.lookDirection}-looking`} />
+   802→   802→            </>
+   803→   803→          )}
+   804→   804→          {detail.numberOfLooks !== undefined && (
+   805→   805→            <Fact label="Averaged samples (looks)" value={String(detail.numberOfLooks)} mono />
+   806→   806→          )}
+   807→   807→        </div>
+   808→   808→        {p.doi && (
+   809→   809→          <a
+   810→   810→            href={`https://doi.org/${p.doi}`}
+   811→   811→            target="_blank"
+   812→   812→            rel="noopener noreferrer"
+   813→   813→            className="mt-3 inline-block font-mono text-[10.5px] text-[#6F6862] underline decoration-[#D8D2C6] underline-offset-2 hover:text-[#1C1A17]"
+   814→   814→          >
+   815→   815→            DOI {p.doi}
+   816→   816→          </a>
+   817→   817→        )}
+   818→   818→        {p.accessNotes && (
+   819→   819→          <div className="mb-3 mt-3 flex items-start gap-2 rounded-md border border-[#E7D9B8] bg-[#FCF8EE] px-2.5 py-2 text-[11px] leading-4 text-[#7A6438]">
+   820→   820→            <span>{p.accessNotes}</span>
+   821→   821→          </div>
+   822→   822→        )}
+   823→   823→        <dl className="space-y-2 text-[11px] leading-4">
+   824→   824→          <ProvenRow k="Provider" v={p.provider} />
+   825→   825→          <ProvenRow k="Product ID" v={p.productId} mono />
+   826→   826→          <ProvenRow k="Processing" v={p.processingSoftware ?? '—'} />
+   827→   827→          <ProvenRow k="Processed at" v={p.processingTime ? fmtDateTime(p.processingTime) : '—'} />
+   828→   828→          <ProvenRow k="Source" v={p.sourceUrl} link />
+   829→   829→          {p.qualityNotes && (
+   830→   830→            <div>
+   831→   831→              <dt className="text-[10px] font-medium uppercase tracking-[0.06em] text-[#8A837B]">Quality flags</dt>
+   832→   832→              <dd>
+   833→   833→                <ul className="mt-1 list-inside list-disc space-y-0.5 text-[#6F6862]">
+   834→   834→                  {p.qualityNotes.map((q, i) => (
+   835→   835→                    <li key={i}>{q}</li>
+   836→   836→                  ))}
+   837→   837→                </ul>
+   838→   838→              </dd>
+   839→   839→            </div>
+   840→   840→          )}
+   841→   841→          {detail.availability.state !== 'available' &&
+   842→   842→            (detail.availability.missingFiles.length > 0 || detail.availability.invalidFiles.length > 0) && (
+   843→   843→              <div>
+   844→   844→                <dt className="text-[10px] font-medium uppercase tracking-[0.06em] text-[#8A837B]">Missing / failed files</dt>
+   845→   845→                <dd className="mt-1 font-mono text-[10px] leading-4 text-[#9E3B2C]/80">
+   846→   846→                  {[...detail.availability.missingFiles,
+   847→   847→                    ...detail.availability.invalidFiles.map((f) => `${f.file} (${f.reason})`)].join(' · ')}
+   848→   848→                </dd>
+   849→   849→              </div>
+   850→   850→            )}
+   851→   851→        </dl>
+   852→   852→      </CollapsibleContent>
+   853→   853→    </Collapsible>
+   854→   854→  );
+   855→   855→}
+   856→   856→
+   857→   857→function Fact({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+   858→   858→  return (
+   859→   859→    <div className="min-w-0">
+   860→   860→      <MicroLabel>{label}</MicroLabel>
+   861→   861→      <div className={`mt-0.5 truncate text-[12px] leading-4 text-[#1C1A17] ${mono ? 'font-mono tabular-nums' : ''}`} title={value}>
+   862→   862→        {value}
+   863→   863→      </div>
+   864→   864→    </div>
+   865→   865→  );
+   866→   866→}
+   867→   867→
+   868→   868→function ProvenRow({ k, v, mono, link }: { k: string; v: string; mono?: boolean; link?: boolean }) {
+   869→   869→  return (
+   870→   870→    <div className="flex gap-2">
+   871→   871→      <dt className="w-24 shrink-0 text-[10px] font-medium uppercase leading-4 tracking-[0.06em] text-[#8A837B]">{k}</dt>
+   872→   872→      <dd className={`min-w-0 break-words text-[#4A443C] ${mono ? 'font-mono text-[10px]' : ''}`}>
+   873→   873→        {link ? (
+   874→   874→          <a href={v} target="_blank" rel="noopener noreferrer" className="underline decoration-[#D8D2C6] underline-offset-2 hover:text-[#1C1A17]">
+   875→   875→            {v.length > 60 ? v.slice(0, 57) + '…' : v}
+   876→   876→          </a>
+   877→   877→        ) : (
+   878→   878→          v
+   879→   879→        )}
+   880→   880→      </dd>
+   881→   881→    </div>
+   882→   882→  );
+   883→   883→}
+   884→   884→
