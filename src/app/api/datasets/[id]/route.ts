@@ -3,6 +3,7 @@ import {
   getDataset,
   getEvidenceExtras,
   getDatasetAvailability,
+  getRecordedRun,
   listDatasets,
 } from '@/lib/data/datasets';
 
@@ -30,8 +31,11 @@ export async function GET(
 
     const ds = getDataset(id);
     if (!ds) {
-      // Configured but the local data is missing/incomplete/invalid.
+      // Configured but the local data is missing/incomplete/invalid. When a
+      // REAL recorded analysis exists (recorded_run.json), it is included so
+      // the UI can offer it as an honestly-labelled alternative to re-running.
       const entry = listDatasets().find((d) => d.id === id)!;
+      const recordedRun = getRecordedRun(id);
       return NextResponse.json({
         ok: true,
         dataset: {
@@ -41,14 +45,33 @@ export async function GET(
           blurb: entry.blurb,
           mode: entry.mode,
           isSynthetic: entry.isSynthetic,
-          provenance: {
-            datasetId: entry.id,
-            provider: entry.sensor,
-            dataClass: entry.dataClass,
-          },
+          provenance: recordedRun
+            ? {
+                datasetId: entry.id,
+                provider: recordedRun.provenance.provider,
+                dataClass: 'real' as const,
+                productType: recordedRun.provenance.productType,
+                platform: recordedRun.provenance.platform,
+                productId: recordedRun.provenance.productId,
+                referenceTime: recordedRun.provenance.referenceTime,
+                secondaryTime: recordedRun.provenance.secondaryTime,
+                temporalBaselineDays: recordedRun.provenance.temporalBaselineDays,
+                doi: recordedRun.provenance.doi,
+                sourceUrl: recordedRun.provenance.sourceUrl,
+                qualityNotes: recordedRun.provenance.qualityNotes,
+              }
+            : {
+                datasetId: entry.id,
+                provider: entry.sensor,
+                dataClass: entry.dataClass,
+              },
+          geometry: recordedRun ? recordedRun.geometry : undefined,
+          footprintPolygon: recordedRun ? recordedRun.footprintPolygon : undefined,
+          center: recordedRun ? recordedRun.center : undefined,
           availability: entry.availability,
         },
         availability: entry.availability,
+        recordedRun,
       });
     }
 

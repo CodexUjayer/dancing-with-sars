@@ -63,6 +63,15 @@ through a severely disturbed ionosphere:
 - the single valid unwrapping component (324,103 px ≈ 2,074 km², 99.7%
   exact-zero phase) is a genuinely stable surface: **max |LOS displacement|
   48 mm < the 72 mm ionospheric systematic floor** → no detection, honestly
+
+**Recorded result (2026-10-21):** because the source granule cannot be re-downloaded without
+Earthdata credentials, the measured figures above are served as a clearly-labelled recorded
+result — `data/derived/nisar-mojave-2026/recorded_run.json` (summary captured from the
+2026-10-20 run stored in the analysis-run database; footprint from live CMR; M4.06 event
+record ci41478192 re-verified live against USGS on 2026-10-21). The analysis API still
+refuses to re-run this dataset (state `missing`, HTTP 409); the UI offers 'View the recorded
+result' instead, and every figure is labelled as recorded.
+
   reported.
 
 A **M4.06 earthquake** occurred inside the frame between the acquisitions

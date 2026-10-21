@@ -66,6 +66,30 @@ What makes it scientifically defensible rather than merely functional:
   its source, with verification dates; every dataset carries a full
   provenance record and a checksummed data manifest.
 
+## What you can do here (feature pass, 2026-10-21)
+
+- **One-screen verdicts** — every analysis opens with a plain-language headline such as
+  *"No motion detectable. Ionosphere noise (72 mm) exceeds the signal (48 mm)."*
+- **Real charts** — a histogram of the measured displacement with an interactive
+  *threshold explorer* (drag it to see how the flagged area changes), and a profile line
+  through the anomaly with ±1σ uncertainty and the ionosphere noise floor shaded.
+- **Seismic context** — the acquisition window drawn as a timeline with the real USGS
+  earthquakes on it; dot size = magnitude, primary event highlighted.
+- **"Why can't I see anything?"** — ionospheric disturbance, coherence loss and the noise
+  floor explained in plain language, using this scene's own numbers.
+- **Guided tour** — a "Start here" walk through the three flagship stories (Mojave 2026
+  honest negative, Panama M7.7 evidence, synthetic earthquake lab) in about two minutes;
+  includes a copyable script for the demo video.
+- **Exports** — download the displayed layer as a standards-compliant GeoTIFF (float32,
+  EPSG-tagged, NaN no-data; verified against an independent parser), as CSV with UTM +
+  lat/lon coordinates, or as PNG.
+- **Find a good radar pair** — search the live NASA CMR catalog for recent NISAR pairs
+  over any place on Earth, ranked by catalog metadata with live USGS earthquake context
+  (the ranking never claims measured coherence).
+- **Recorded result** — the flagship Mojave analysis of the real operational NISAR granule
+  (source since removed from this server) is served as a clearly-labelled recorded result
+  with its real CMR footprint and the real M4.06 event on the map.
+
 ## Quick start
 
 Prerequisites: [Bun](https://bun.sh) ≥ 1.1. Network access is optional —

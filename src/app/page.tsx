@@ -3,18 +3,19 @@
 /**
  * MOTUS — Earth-change intelligence (NASA Space Apps 2026, "Dancing with the SARs").
  *
- * FINAL-PASS UI (plain-language redesign):
- *   The page follows one simple story —
- *     Step 1 · Choose an area  →  Step 2 · Analyze it  →  Step 3 · Understand the result
- *   Every screen answers: what am I looking at, what should I do next, what
- *   does the result mean, and what should I *not* conclude from it. Technical
- *   detail stays available under "Advanced" sections and the "How it works"
- *   drawer, so the science remains inspectable.
+ * The page follows one simple story —
+ *   Step 1 · Choose an area  →  Step 2 · Analyze it  →  Step 3 · Understand the result
+ * plus two tools that make it real: a guided tour of the three flagship stories,
+ * and a live "find a good radar pair" search over any place on Earth.
+ *
+ * Every screen answers: what am I looking at, what should I do next, what
+ * does the result mean, and what should I *not* conclude from it.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Loader2, Play, RotateCcw, ChevronDown, BookOpen, Check, MapPin, AlertTriangle } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Loader2, Play, RotateCcw, ChevronDown, BookOpen, Check, MapPin, AlertTriangle, Sparkles, Download, FileSpreadsheet, Image as ImageIcon, Mountain } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
@@ -23,7 +24,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { MethodologyDrawer } from '@/components/app/methodology';
-import { QuantitativeResults, EvidenceResults } from '@/components/app/results-panel';
+import { QuantitativeResults, EvidenceResults, RecordedResults } from '@/components/app/results-panel';
+import { PairFinder } from '@/components/app/pair-finder';
+import { TOUR_STORIES, StoryPicker, TourCard, type TourAction } from '@/components/app/tour';
 import {
   DataClassBadge,
   MicroLabel,
@@ -39,10 +42,13 @@ import type {
   DatasetListEntry,
   HealthPayload,
   PanamaGranule,
+  RecordedRunResult,
 } from '@/components/app/types';
+import { isEvidenceResult, isRecordedResult } from '@/components/app/types';
 import type { LayerKind } from '@/components/app/raster-render';
+import { renderOverlay } from '@/components/app/raster-render';
 import { decodeTransport, type DecodedGrids } from '@/components/app/decode';
-import { isEvidenceResult } from '@/components/app/types';
+import { toGeoTiff, toCsv, downloadBlob, fileStem } from '@/components/app/export';
 
 const MapPanel = dynamic(() => import('@/components/app/map-panel'), {
   ssr: false,
@@ -71,11 +77,11 @@ const DEFAULT_ADVANCED: AdvancedParams = {
 
 /**
  * Display / default-selection rank: a real, ready, measurable dataset first,
- * then the real evidence view, then demonstrations, then unavailable data.
- * Stable, so the registry order is preserved within each class.
+ * then the real evidence view, then a real recorded result, then demos, then
+ * unavailable data. Stable within each class.
  */
 function readinessRank(d: DatasetListEntry): number {
-  if (d.availability.state !== 'available') return 3;
+  if (d.availability.state !== 'available') return d.availability.recorded ? 1.5 : 3;
   if (d.dataClass === 'synthetic') return 2;
   if (d.mode === 'evidence') return 1;
   return 0;
@@ -121,6 +127,23 @@ function layerInterpretation(l: LayerKind, isPrediction: boolean): string {
   return 'Gray shows where a valid measurement exists. Transparent areas were excluded (no reliable signal).';
 }
 
+/** Animated integer counter for the hero stats strip. */
+function CountUp({ to, duration = 900 }: { to: number; duration?: number }) {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    let raf = 0;
+    const t0 = performance.now();
+    const tick = (t: number) => {
+      const p = Math.min(1, (t - t0) / duration);
+      setV(Math.round(to * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [to, duration]);
+  return <>{v.toLocaleString()}</>;
+}
+
 export default function Home() {
   const [datasets, setDatasets] = useState<DatasetListEntry[] | null>(null);
   const [health, setHealth] = useState<HealthPayload | null>(null);
@@ -128,6 +151,7 @@ export default function Home() {
   const [detail, setDetail] = useState<DatasetDetail | null>(null);
   const [detailEvent, setDetailEvent] = useState<unknown>(null);
   const [detailGranules, setDetailGranules] = useState<PanamaGranule[]>([]);
+  const [recordedRun, setRecordedRun] = useState<RecordedRunResult | null>(null);
   const [running, setRunning] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [result, setResult] = useState<AnalysisPayload | null>(null);
@@ -139,6 +163,12 @@ export default function Home() {
   const [gridsMeta, setGridsMeta] = useState<Parameters<typeof import('@/components/app/raster-render').renderOverlay>[1] | undefined>(undefined);
   const [granulePolys, setGranulePolys] = useState<Array<{ granule: PanamaGranule; poly: [number, number][] }>>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Guided tour state.
+  const [tour, setTour] = useState<{ storyIdx: number; step: number } | null>(null);
+  const [storyPickerOpen, setStoryPickerOpen] = useState(false);
+  const [pendingTourAction, setPendingTourAction] = useState<TourAction | null>(null);
+  const [tourBusy, setTourBusy] = useState(false);
 
   /** Display order: real & ready first, demos next, unavailable last (stable). */
   const sortedDatasets = useMemo(() => {
@@ -166,8 +196,7 @@ export default function Home() {
   }, []);
 
   // Load dataset detail on selection; adopt the dataset's suggested starting
-  // parameters (e.g. a decorrelated ionosphere-dominated pair suggests a lower
-  // coherence threshold — every value stays user-adjustable under Advanced).
+  // parameters; capture the recorded run when one exists (Mojave).
   useEffect(() => {
     if (!selectedId) return;
     setResult(null);
@@ -176,6 +205,7 @@ export default function Home() {
     setGridsMeta(undefined);
     setGranulePolys([]);
     setDetail(null);
+    setRecordedRun(null);
     setLayer('displacement');
     const suggestedCoh = datasets?.find((d) => d.id === selectedId)?.suggestedParams?.coherenceThreshold;
     setAdvanced((a) => ({
@@ -184,15 +214,33 @@ export default function Home() {
     }));
     fetch(`/api/datasets/${selectedId}`)
       .then((r) => r.json())
-      .then((d: { ok: boolean; dataset?: DatasetDetail; event?: unknown; granules?: PanamaGranule[] }) => {
+      .then((d: {
+        ok: boolean;
+        dataset?: DatasetDetail;
+        event?: unknown;
+        granules?: PanamaGranule[];
+        recordedRun?: RecordedRunResult;
+      }) => {
         if (d.ok && d.dataset) {
           setDetail(d.dataset);
           setDetailEvent(d.event ?? null);
           setDetailGranules(d.granules ?? []);
+          if (d.recordedRun) setRecordedRun({ ...d.recordedRun, kind: 'recorded' as const });
         }
       })
       .catch((e) => setError((e as Error).message));
   }, [selectedId, datasets]);
+
+  /** Show the recorded (real, past) analysis of a dataset whose source data is gone. */
+  const showRecorded = useCallback(() => {
+    if (!recordedRun) return;
+    setResult(null);
+    setError(null);
+    setGrids(null);
+    setGridsMeta(undefined);
+    setLayer('displacement');
+    setResult(recordedRun);
+  }, [recordedRun]);
 
   const runAnalysis = useCallback(async () => {
     if (!selectedId || running) return;
@@ -226,7 +274,7 @@ export default function Home() {
           setGrids(r.prediction ? decodeTransport(r.prediction) : null);
           setGridsMeta(r.prediction?.meta);
           setLayer('displacement');
-        } else {
+        } else if (!isRecordedResult(r)) {
           setGrids(decodeTransport(r.transport));
           setGridsMeta(r.transport.meta);
           setLayer('displacement');
@@ -242,9 +290,52 @@ export default function Home() {
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
+  /* ---------------- Guided tour ---------------- */
+
+  const enterTourStep = useCallback((storyIdx: number, step: number) => {
+    setTour({ storyIdx, step });
+    const st = TOUR_STORIES[storyIdx].steps[step];
+    const el = document.getElementById(st.target);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: st.target === 'hero' ? 'start' : 'center' });
+      el.classList.remove('motus-tour-highlight');
+      void el.offsetWidth; // restart the animation
+      el.classList.add('motus-tour-highlight');
+      setTimeout(() => el.classList.remove('motus-tour-highlight'), 3600);
+    }
+    if (st.action.type === 'select') {
+      setSelectedId(st.action.datasetId);
+      setResult(null);
+    } else if (st.action.type === 'run') {
+      setPendingTourAction({ type: 'run' });
+    } else if (st.action.type === 'recorded') {
+      setPendingTourAction({ type: 'recorded' });
+    }
+  }, []);
+
+  // Execute pending tour actions once the detail / recorded run has loaded.
+  useEffect(() => {
+    if (!pendingTourAction || !detail) return;
+    if (pendingTourAction.type === 'run') {
+      if (detail.availability.state === 'available' && !running && !result) {
+        setPendingTourAction(null);
+        setTourBusy(true);
+        void runAnalysis().finally(() => setTourBusy(false));
+      }
+    } else if (pendingTourAction.type === 'recorded') {
+      if (recordedRun) {
+        setPendingTourAction(null);
+        showRecorded();
+      }
+    }
+  }, [pendingTourAction, detail, recordedRun, running, result, runAnalysis, showRecorded]);
+
+  /* ---------------- Map events + helpers ---------------- */
+
   const eventsForMap = useMemo(() => {
     const fromResult = (() => {
       if (!result) return [];
+      if (isRecordedResult(result)) return result.event ? [result.event] : [];
       if (isEvidenceResult(result)) {
         return result.event ? [result.event, ...result.liveEvents.filter((e) => e.id !== result.event?.id)] : result.liveEvents;
       }
@@ -259,6 +350,7 @@ export default function Home() {
   }, [result, detail, detailEvent]);
 
   const primaryEvent = useMemo(() => {
+    if (result && isRecordedResult(result)) return result.event ?? null;
     if (result && isEvidenceResult(result)) return result.event;
     return detailEvent as { id: string } | null ?? null;
   }, [result, detailEvent]);
@@ -273,6 +365,60 @@ export default function Home() {
     !!result && isEvidenceResult(result) && !!result.prediction && layer === 'displacement';
   const stages = detail ? processingStages(detail.mode) : processingStages('quantitative');
   const anyReady = (sortedDatasets ?? []).some((d) => d.availability.state === 'available');
+  const realCount = (datasets ?? []).filter((d) => d.dataClass === 'real').length;
+  const liveCatalogs = !!health && (health.capabilities.liveUsgs || health.capabilities.liveCmr);
+
+  /* ---------------- Exports (from the decoded grids, client-side) ---------------- */
+
+  const currentLayerGrid = useCallback((): { data: Float32Array; name: string } | null => {
+    if (!grids || !gridsMeta) return null;
+    if (layer === 'coherence') return { data: grids.coherence, name: 'coherence' };
+    if (layer === 'sigma') return { data: grids.sigma, name: 'uncertainty' };
+    if (layer === 'coverage') {
+      const m = new Float32Array(grids.mask.length);
+      for (let i = 0; i < grids.mask.length; i++) m[i] = grids.mask[i] ? 1 : NaN;
+      return { data: m, name: 'coverage' };
+    }
+    return { data: grids.displacement, name: 'apparent-los-displacement' };
+  }, [grids, gridsMeta, layer]);
+
+  const exportGeotiff = useCallback(() => {
+    const g = currentLayerGrid();
+    if (!g || !gridsMeta) return;
+    try {
+      const blob = toGeoTiff(g.data, gridsMeta, `MOTUS ${detail?.title ?? ''} — ${g.name}`);
+      downloadBlob(blob, `${fileStem(selectedId ?? 'dataset', g.name, isPredictionLayer)}.tif`);
+    } catch (e) {
+      console.error('[motus-export] geotiff failed', e);
+    }
+  }, [currentLayerGrid, gridsMeta, detail, selectedId, isPredictionLayer]);
+
+  const exportCsv = useCallback(() => {
+    const g = currentLayerGrid();
+    if (!g || !grids || !gridsMeta) return;
+    try {
+      const blob = toCsv(g.data, grids.mask, gridsMeta, g.name);
+      downloadBlob(blob, `${fileStem(selectedId ?? 'dataset', g.name, isPredictionLayer)}.csv`);
+    } catch (e) {
+      console.error('[motus-export] csv failed', e);
+    }
+  }, [currentLayerGrid, grids, gridsMeta, selectedId, isPredictionLayer]);
+
+  const exportPng = useCallback(() => {
+    if (!grids || !gridsMeta) return;
+    try {
+      const ov = renderOverlay(grids, gridsMeta, layer);
+      if (!ov?.dataUrl) return;
+      const a = document.createElement('a');
+      a.href = ov.dataUrl;
+      a.download = `${fileStem(selectedId ?? 'dataset', layer, isPredictionLayer)}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (e) {
+      console.error('[motus-export] png failed', e);
+    }
+  }, [grids, gridsMeta, layer, selectedId, isPredictionLayer]);
 
   const scrollToChoose = () => {
     document.getElementById('choose-area')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -285,7 +431,7 @@ export default function Home() {
           <div className="flex items-baseline gap-3">
             <span className="text-[17px] font-semibold tracking-[0.02em] text-[#1C1A17]">MOTUS</span>
             <span className="hidden text-[11px] text-[#8A837B] sm:inline">
-              See how Earth&apos;s surface may have moved · NASA Space Apps 2026
+              Did the ground move? Check it with space radar · NASA Space Apps 2026
             </span>
           </div>
           <div className="flex items-center gap-1.5">
@@ -303,16 +449,31 @@ export default function Home() {
 
       <main className="mx-auto w-full max-w-[1240px] flex-1 px-4 py-8 sm:px-6 sm:py-10">
         {/* ---------- Hero: what is this, what can I do here ---------- */}
-        <section aria-label="Introduction" className="mb-10 max-w-3xl">
-          <h1 className="text-[26px] font-semibold leading-8 tracking-[-0.01em] text-[#1C1A17] sm:text-[30px] sm:leading-9">
-            Explore how Earth&apos;s surface may have moved.
-          </h1>
-          <p className="mt-3 max-w-2xl text-[14px] leading-6 text-[#4A443C]">
-            MOTUS examines radar measurements taken from space to look for changes in Earth&apos;s
-            surface. It can compare an observed pattern with earthquake models, but it cannot
-            always tell what caused a change — and it will say so when it can&apos;t.
-          </p>
-          <div className="mt-5 flex flex-wrap items-center gap-3">
+        <section id="hero" aria-label="Introduction" className="mb-10 max-w-3xl scroll-mt-20">
+          <motion.h1
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, ease: 'easeOut' }}
+            className="text-[26px] font-semibold leading-8 tracking-[-0.01em] text-[#1C1A17] sm:text-[30px] sm:leading-9"
+          >
+            Did the ground move? Check it with space radar.
+          </motion.h1>
+          <motion.p
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.06, ease: 'easeOut' }}
+            className="mt-3 max-w-2xl text-[14px] leading-6 text-[#4A443C]"
+          >
+            MOTUS compares radar images of the same place taken days apart, looking for
+            earthquake-sized ground movement. It cross-checks any pattern against real earthquake
+            records and physics models — and tells you honestly when it can&rsquo;t tell.
+          </motion.p>
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.12, ease: 'easeOut' }}
+            className="mt-5 flex flex-wrap items-center gap-3"
+          >
             <Button
               onClick={scrollToChoose}
               className="h-11 gap-2 rounded-lg bg-[#1C1A17] px-5 text-[13.5px] font-medium text-white hover:bg-[#33302B]"
@@ -320,10 +481,51 @@ export default function Home() {
               <Play className="h-4 w-4" aria-hidden />
               Start an analysis
             </Button>
+            <Button
+              onClick={() => setStoryPickerOpen(true)}
+              className="h-11 gap-2 rounded-lg border border-[#D8D2C6] bg-white px-5 text-[13.5px] font-medium text-[#1C1A17] hover:bg-[#F7F4EE]"
+            >
+              <Sparkles className="h-4 w-4 text-[#B08D57]" aria-hidden />
+              Take the guided tour
+            </Button>
             <span className="text-[12px] text-[#8A837B]">
-              Free to explore — a demonstration dataset is always available.
+              3 stories · about 2 minutes · drives the real page
             </span>
-          </div>
+          </motion.div>
+
+          {/* live stats strip */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.5, delay: 0.2 }}
+            className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-[#EFEAE2] bg-white px-4 py-3"
+            aria-label="Live service status"
+          >
+            <span className="flex items-baseline gap-1.5 text-[12px] text-[#4A443C]">
+              <span className="font-mono text-[15px] font-semibold tabular-nums text-[#1C1A17]">
+                {datasets ? <CountUp to={datasets.length} /> : '—'}
+              </span>
+              study areas
+            </span>
+            <span className="flex items-baseline gap-1.5 text-[12px] text-[#4A443C]">
+              <span className="font-mono text-[15px] font-semibold tabular-nums text-[#1C1A17]">
+                {datasets ? <CountUp to={realCount} /> : '—'}
+              </span>
+              built on real NASA data
+            </span>
+            <span className="flex items-center gap-1.5 text-[12px] text-[#4A443C]">
+              <span
+                className={`motus-live-dot inline-block h-2 w-2 rounded-full ${liveCatalogs ? 'bg-[#2C5F58]' : 'bg-[#B08D57]'}`}
+                aria-hidden
+              />
+              {health === null ? 'checking NASA catalogs…' : liveCatalogs ? 'Live NASA catalogs connected' : 'NASA catalogs: cached records'}
+            </span>
+            <span className="ml-auto hidden items-center gap-1.5 text-[11px] text-[#8A837B] sm:flex">
+              <Mountain className="h-3.5 w-3.5 text-[#B08D57]" aria-hidden />
+              flagship story: a real NISAR pair that honestly found nothing
+            </span>
+          </motion.div>
+
           <ol className="mt-7 grid gap-2 text-[12px] text-[#6F6862] sm:grid-cols-3 sm:gap-4" aria-label="How to use MOTUS">
             {[
               ['1', 'Choose an area', 'Pick a study area below. Labels say whether the data are real, a demo, or unavailable.'],
@@ -399,7 +601,7 @@ export default function Home() {
         {/* ---------- Workspace: Step 2 (run) · map · Step 3 (result) ---------- */}
         <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1.85fr)_minmax(0,1fr)]">
           {/* Step 2 — Run the analysis (first on mobile, right column on desktop) */}
-          <section aria-label="Step 2 — run the analysis" className="order-1 self-start rounded-xl border border-[#E7E2DA] bg-white p-5 lg:order-2 lg:col-start-2 lg:row-start-1">
+          <section id="step-run" aria-label="Step 2 — run the analysis" className="order-1 self-start scroll-mt-20 rounded-xl border border-[#E7E2DA] bg-white p-5 lg:order-2 lg:col-start-2 lg:row-start-1">
             <StepHeader n={2} title="Run the analysis" note="One click. The default settings are safe; technical options are hidden below." inside />
             {detail ? (
               <>
@@ -411,7 +613,7 @@ export default function Home() {
                   <p className="mt-1 text-[12.5px] leading-[1.4rem] text-[#6F6862]">{detail.blurb}</p>
                 </div>
 
-                {detail.availability.state !== 'available' && (
+                {detail.availability.state !== 'available' && !detail.availability.recorded && (
                   <div className="mt-3 rounded-lg border border-[#E5C4B7] bg-[#FBF3EF] p-3.5" role="alert">
                     <p className="flex items-center gap-1.5 text-[12.5px] font-semibold text-[#9E3B2C]">
                       <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden />
@@ -425,6 +627,27 @@ export default function Home() {
                         Tip: choose a <strong>Ready to analyze</strong> or <strong>Demo data</strong> area above — those work right now.
                       </p>
                     )}
+                  </div>
+                )}
+
+                {detail.availability.state !== 'available' && detail.availability.recorded && (
+                  <div className="mt-3 rounded-lg border border-[#B08D57]/50 bg-[#F7F2E7] p-3.5" role="status">
+                    <p className="text-[12.5px] font-semibold text-[#7A6438]">
+                      The source data is no longer on this server — but the real analysis was recorded.
+                    </p>
+                    <p className="mt-1.5 text-[12px] leading-[1.4rem] text-[#7A6438]">
+                      This 2.6 GB product was fully analysed here on {recordedRun?.recordedAt.slice(0, 10) ?? '2026-10-20'}.
+                      You can view the recorded result — every figure comes from the real run, clearly labelled.
+                      Re-running needs an Earthdata-authenticated re-download (see &ldquo;About this data&rdquo; below).
+                    </p>
+                    <Button
+                      onClick={showRecorded}
+                      disabled={!recordedRun}
+                      className="mt-2.5 h-10 w-full gap-2 rounded-lg bg-[#7A6438] text-[13px] font-medium text-white hover:bg-[#8A7350] disabled:opacity-60"
+                    >
+                      <Mountain className="h-4 w-4" aria-hidden />
+                      View the recorded result
+                    </Button>
                   </div>
                 )}
 
@@ -617,7 +840,7 @@ export default function Home() {
           </section>
 
           {/* Map: second on mobile, left column spanning both rows on desktop */}
-          <section aria-label="Study area map" className="order-2 lg:order-1 lg:col-start-1 lg:row-span-2 lg:row-start-1">
+          <section id="map-section" aria-label="Study area map" className="order-2 scroll-mt-20 lg:order-1 lg:col-start-1 lg:row-span-2 lg:row-start-1">
             {detail ? (
               <div className="lg:sticky lg:top-20">
                 <MapPanel
@@ -671,12 +894,35 @@ export default function Home() {
                         Model prediction — not a measurement
                       </p>
                     )}
+                    {/* export row — client-side, from the same decoded grids */}
+                    <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-[#EFEAE2] pt-2.5">
+                      <span className="mr-0.5 text-[10px] font-medium uppercase tracking-[0.06em] text-[#8A837B]">Download this layer</span>
+                      <ExportChip onClick={exportGeotiff} label="GeoTIFF" title="Georeferenced TIFF — opens directly in QGIS / ArcGIS / GDAL">
+                        <Download className="h-3 w-3" aria-hidden />
+                      </ExportChip>
+                      <ExportChip onClick={exportCsv} label="CSV" title="Sampled values with UTM + lat/lon coordinates">
+                        <FileSpreadsheet className="h-3 w-3" aria-hidden />
+                      </ExportChip>
+                      <ExportChip onClick={exportPng} label="PNG" title="The map image exactly as rendered">
+                        <ImageIcon className="h-3 w-3" aria-hidden />
+                      </ExportChip>
+                    </div>
                   </div>
                 )}
                 {!grids && (
                   <p className="mt-3 rounded-xl border border-[#E7E2DA] bg-white px-3.5 py-3 text-[11.5px] leading-4 text-[#6F6862]">
-                    This is the selected study area. After you run the analysis, the measurements appear
-                    here as colors on the map.
+                    {result && isRecordedResult(result) ? (
+                      <>
+                        This is the real footprint of the analyzed granule, with the M{result.event?.magnitude.toFixed(2)} earthquake
+                        that occurred inside it. No measurement layer is drawn: the 2.6 GB source product is no longer
+                        on this server, so the recorded result shows figures and charts instead of a re-computed map.
+                      </>
+                    ) : (
+                      <>
+                        This is the selected study area. After you run the analysis, the measurements appear
+                        here as colors on the map.
+                      </>
+                    )}
                   </p>
                 )}
               </div>
@@ -688,7 +934,7 @@ export default function Home() {
           </section>
 
           {/* Step 3 — Understand the result (below step 2 on mobile, right column on desktop) */}
-          <section aria-label="Step 3 — understand the result" className="order-3 lg:order-2 lg:col-start-2 lg:row-start-2">
+          <section id="step-result" aria-label="Step 3 — understand the result" className="order-3 scroll-mt-20 lg:order-2 lg:col-start-2 lg:row-start-2">
             {error && (
               <div className="rounded-xl border border-[#E7E2DA] bg-white p-5">
                 <Alert variant="destructive" className="rounded-lg border-[#E5C4B7] bg-[#FBF3EF] text-[#9E3B2C]">
@@ -698,23 +944,39 @@ export default function Home() {
               </div>
             )}
             {result && detail && (
-              <div className="rounded-xl border border-[#E7E2DA] bg-white p-5">
-                <StepHeader n={3} title="Understand the result" note="Read this top to bottom: the finding, the certainty, possible explanations, and the limits." inside />
+              <motion.div
+                key={isRecordedResult(result) ? `rec-${result.datasetId}` : (result as { runId?: string }).runId ?? result.datasetId}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4, ease: 'easeOut' }}
+                className="rounded-xl border border-[#E7E2DA] bg-white p-5"
+              >
+                <StepHeader n={3} title="Understand the result" note="Read this top to bottom: the verdict, the finding, the charts, the certainty, possible explanations, and the limits." inside />
                 <div className="mt-4">
-                  {isEvidenceResult(result) ? (
+                  {isRecordedResult(result) ? (
+                    <RecordedResults rec={result} />
+                  ) : isEvidenceResult(result) ? (
                     <EvidenceResults result={result} onGranulePolys={setGranulePolys} />
                   ) : (
-                    <QuantitativeResults result={result} />
+                    <QuantitativeResults
+                      result={result}
+                      rg={{ grids, gridsMeta, isPrediction: isPredictionLayer }}
+                      acquisitionTimes={{
+                        referenceTime: detail.provenance.referenceTime,
+                        secondaryTime: detail.provenance.secondaryTime,
+                      }}
+                    />
                   )}
                 </div>
-              </div>
+              </motion.div>
             )}
             {!result && !error && !running && detail && (
               <div className="rounded-xl border border-dashed border-[#D8D2C6] bg-white/60 p-6 text-center">
                 <p className="text-[13px] font-medium text-[#4A443C]">No result yet</p>
                 <p className="mx-auto mt-1.5 max-w-xs text-[12px] leading-[1.45rem] text-[#8A837B]">
-                  Run the analysis above (step 2). When it finishes, the result appears here —
-                  what was found, how certain it is, and what could explain it.
+                  {detail.availability.recorded
+                    ? 'View the recorded result (step 2) — the real analysis of this dataset, captured before the source data left this server.'
+                    : 'Run the analysis above (step 2). When it finishes, the result appears here — the verdict, what was found, how certain it is, and what could explain it.'}
                 </p>
               </div>
             )}
@@ -722,7 +984,7 @@ export default function Home() {
         </div>
 
         {/* ---------- Honest scope note ---------- */}
-        <section aria-label="About the results" className="mt-10 rounded-xl border border-[#E7E2DA] bg-white p-5">
+        <section id="scope-note" aria-label="About the results" className="mt-10 scroll-mt-20 rounded-xl border border-[#E7E2DA] bg-white p-5">
           <h2 className="text-[14px] font-semibold text-[#1C1A17]">What MOTUS can and cannot tell you</h2>
           <ul className="mt-2.5 grid gap-2 text-[12.5px] leading-[1.45rem] text-[#6F6862] sm:grid-cols-2">
             <li className="flex gap-2">
@@ -734,7 +996,7 @@ export default function Home() {
               <span>It compares each pattern with earthquake records and models — a consistency check, not proof of cause.</span>
             </li>
             <li className="flex gap-2">
-              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 shrink-0 text-[#B08D57]" aria-hidden />
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#B08D57]" aria-hidden />
               <span>It cannot always separate real ground motion from atmospheric effects in the radar signal.</span>
             </li>
             <li className="flex gap-2">
@@ -747,6 +1009,9 @@ export default function Home() {
             <WhatIsThis label="&ldquo;What does this mean?&rdquo;">These expandable notes define technical terms such as coherence (how consistently the radar signal matches between observations), interferogram (a map made by comparing two radar observations), and LOS displacement (movement toward or away from the satellite&apos;s viewing direction).</WhatIsThis>
           </p>
         </section>
+
+        {/* ---------- Find a good radar pair (live catalog tool) ---------- */}
+        <PairFinder />
       </main>
 
       <footer className="mt-auto border-t border-[#E7E2DA] bg-white">
@@ -759,7 +1024,46 @@ export default function Home() {
           </p>
         </div>
       </footer>
+
+      {/* ---------- Guided tour ---------- */}
+      <StoryPicker
+        open={storyPickerOpen}
+        onOpenChange={setStoryPickerOpen}
+        onPick={(storyIdx) => {
+          setStoryPickerOpen(false);
+          enterTourStep(storyIdx, 0);
+        }}
+      />
+      {tour && (
+        <TourCard
+          story={TOUR_STORIES[tour.storyIdx]}
+          stepIdx={tour.step}
+          busy={tourBusy || running}
+          onStep={(i) => enterTourStep(tour.storyIdx, i)}
+          onExit={() => {
+            setTour(null);
+            setPendingTourAction(null);
+            setTourBusy(false);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** Small download chip used in the map layer card. */
+function ExportChip({ onClick, label, title, children }: { onClick: () => void; label: string; title: string; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-label={`Download ${label} — ${title}`}
+      className="inline-flex items-center gap-1 rounded-md border border-[#D8D2C6] bg-white px-2 py-1 text-[10.5px] font-medium text-[#4A443C] transition-colors hover:bg-[#F7F4EE] hover:text-[#1C1A17]"
+    >
+      {children}
+      {label}
+    </button>
   );
 }
 

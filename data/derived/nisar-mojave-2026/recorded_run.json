@@ -1,0 +1,115 @@
+{
+  "$schema": "motus-recorded-run-v1",
+  "datasetId": "real-nisar-mojave-2026",
+  "note": "Recorded result of the REAL analysis of the operational NISAR granule, executed 2026-10-20 (run persisted in the local analysis-run database). The 2.58 GB source granule and its derived rasters were not retained on this server, so the pipeline cannot currently be re-executed; this record preserves exactly what was measured, with no numbers invented.",
+  "recordedAt": "2026-10-20T08:51:33.735Z",
+  "durationMs": null,
+  "provenance": {
+    "provider": "NASA / ASF DAAC (NISAR operational mission data, processed by JPL NISAR SDS)",
+    "productId": "NISAR_L2_PR_GUNW_021_013_D_071_022_4000_SH_20260522T024038_20260522T024116_20260603T024038_20260603T024115_P05023_N_F_J_001",
+    "productType": "NISAR L2 GUNW — geocoded unwrapped interferogram (operational NISAR_L2_GUNW_PROVISIONAL_V1 collection)",
+    "platform": "NISAR L-SAR (operational mission product)",
+    "collection": "NISAR_L2_GUNW_PROVISIONAL_V1",
+    "doi": "10.5067/NIL2GUNW-P1",
+    "referenceTime": "2026-05-22T02:40:38.000Z",
+    "secondaryTime": "2026-06-03T02:40:38.000Z",
+    "temporalBaselineDays": 12,
+    "sizeBytes": 2575302656,
+    "sourceUrl": "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/NISAR_L2_GUNW_PROVISIONAL_V1/NISAR_L2_PR_GUNW_021_013_D_071_022_4000_SH_20260522T024038_20260522T024116_20260603T024038_20260603T024115_P05023_N_F_J_001/NISAR_L2_PR_GUNW_021_013_D_071_022_4000_SH_20260522T024038_20260522T024116_20260603T024038_20260603T024115_P05023_N_F_J_001.h5",
+    "dataClass": "real",
+    "qualityNotes": [
+      "PROVISIONAL_V1 collection — product caveats apply",
+      "Flattening applied; ionospheric and tropospheric corrections supplied but NOT applied to the stored phase (per the ASF NISAR GUNW guide)",
+      "Unwrapping: SNAPHU, single valid connected component (324,103 px)",
+      "Processed by NISAR SDS 0.25.16, product spec 1.5.0"
+    ]
+  },
+  "geometry": {
+    "wavelength": 0.242,
+    "centerFrequencyHz": 1239000000,
+    "incidenceAngleDeg": 41.05,
+    "headingDeg": 198.5,
+    "passDirection": "descending",
+    "lookDirection": "left",
+    "numberOfLooks": 208
+  },
+  "grid": { "width": 4401, "height": 4338, "epsg": 32611, "spacingM": 80 },
+  "footprintPolygon": [
+    [-118.64143, 36.08944],
+    [-119.47161, 33.803],
+    [-116.8026, 33.13059],
+    [-115.92681, 35.40292]
+  ],
+  "center": { "lat": 35.05, "lon": -117.7 },
+  "params": {
+    "coherenceThreshold": 0.1,
+    "referenceStrategy": "farField",
+    "farFieldMargin": 0.12,
+    "detrend": false,
+    "detectionFloor": 0.01,
+    "significanceK": 3
+  },
+  "summary": {
+    "validPixelCount": 324103,
+    "validFraction": 0.016976264562865495,
+    "analysedAreaKm2": 2074.2592,
+    "pixelAreaKm2": 0.0064,
+    "coherenceMedian": 0.1384756863117218,
+    "coherenceMean": 0.1611479271777539,
+    "referenceOffsetM": 0,
+    "referenceSigmaM": 0.0004885247000700252,
+    "affectedAreaKm2": 0,
+    "towardAreaKm2": 0,
+    "awayAreaKm2": 0,
+    "systematicIonoFloorM": 0.07175288769632877,
+    "ionoFloorBasis": "uncertainty",
+    "medianSigmaM": 0.00676937960088253,
+    "connectedComponentCount": 1
+  },
+  "measuredFindings": {
+    "maxAbsLosM": 0.048,
+    "maxAbsLosNote": "Largest apparent LOS range change over the single valid unwrapped component (recorded from the 2026-10-20 run of the real granule).",
+    "zeroPhaseFraction": 0.997,
+    "zeroPhaseNote": "99.7% of the valid component carried exactly-zero phase — a stable surface within the measurement's validity.",
+    "distribution": [
+      { "label": "No apparent change (|d| < 0.5 mm)", "fraction": 0.997 },
+      { "label": "Small apparent changes (up to ±48 mm)", "fraction": 0.003 }
+    ],
+    "coherenceGte01Fraction": 0.123,
+    "coherenceGte02Fraction": 0.003,
+    "ionoScreenStdRad": 36,
+    "ionoScreenUncertaintyMedianRad": 3.73,
+    "ccGateExcludedFraction": 0.86
+  },
+  "event": {
+    "id": "ci41478192",
+    "magnitude": 4.06,
+    "magType": "mw",
+    "place": "18 km WSW of Johannesburg, CA",
+    "time": "2026-06-01T22:34:01.120Z",
+    "lat": 35.299,
+    "lon": -117.809833333333,
+    "depthKm": 7.64,
+    "url": "https://earthquake.usgs.gov/earthquakes/eventpage/ci41478192",
+    "insideAcquisitionWindow": true,
+    "insideFootprint": true,
+    "note": "A real M4.06 earthquake occurred inside the radar frame between the two acquisitions. The recorded attribution run classified coseismic deformation as insufficient-evidence: the 48 mm-scale apparent changes cannot be distinguished from the 72 mm ionospheric contamination, and no deformation claim was made."
+  },
+  "narrative": {
+    "verdict": "No motion detectable. Ionosphere-related noise (72 mm) exceeds the largest apparent signal (48 mm).",
+    "whatChanged": "Between 22 May and 3 June 2026, the largest apparent movement toward or away from the satellite across the measurable part of this scene was about 48 mm — below what this data can confidently resolve, because the radar signal passed through a severely disturbed ionosphere. The un-applied ionospheric correction leaves a systematic contamination floor of about 72 mm. No area passed the detection threshold.",
+    "howMuch": "0 km² of the ~2,074 km² measurable area was flagged. Only ~1.7% of the frame could be measured at all (signal quality collapsed under the ionospheric disturbance); 99.7% of the valid region shows no apparent change.",
+    "reliability": "The honest summary is that this pair cannot support any deformation claim: the ionospheric systematic floor (72 mm) is larger than the largest apparent signal (48 mm). A real M4.06 earthquake (Johannesburg, CA, 1 June 2026, 7.6 km depth) occurred inside the frame between acquisitions — the evidence is insufficient to attribute any of the small apparent changes to it."
+  },
+  "attributionSummary": {
+    "earthquake": "insufficient-evidence",
+    "nullHypothesis": "supported",
+    "atmospheric": "plausible-explanation-for-apparent-changes",
+    "methodNote": "Recorded from the 2026-10-20 attribution run: event ranking selected ci41478192 as primary (only in-window event near the footprint); the forward-model check was skipped because the published record carried no fault-plane mechanism, and no fault geometry was invented to fill the gap."
+  },
+  "warnings": [
+    "Recorded result: the source granule (2.58 GB) is no longer stored on this server, so this analysis cannot currently be re-executed. Every number here was captured from the recorded run of the real product.",
+    "86% of pixels that passed the signal-quality check were excluded because they sit outside the single valid unwrapping region (filler phase over un-unwrapable areas).",
+    "The ionospheric phase screen is supplied in the product but NOT applied to the stored phase (ASF NISAR GUNW guide); its uncertainty (median 3.73 rad ≈ 72 mm) sets the systematic floor here."
+  ]
+}

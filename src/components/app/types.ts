@@ -17,6 +17,8 @@ export interface DatasetAvailability {
   missingFiles: string[];
   invalidFiles: Array<{ file: string; reason: string }>;
   explanation: string;
+  /** Pointer to a real recorded analysis that exists despite missing data. */
+  recorded?: { recordedAt: string; note: string };
 }
 
 export interface DatasetListEntry {
@@ -86,10 +88,83 @@ export interface EvidenceAnalysisResult {
   runId?: string;
 }
 
-export type AnalysisPayload = (AnalysisResult & { runId?: string }) | EvidenceAnalysisResult;
+export type AnalysisPayload = (AnalysisResult & { runId?: string }) | EvidenceAnalysisResult | RecordedRunResult;
 
 export function isEvidenceResult(r: AnalysisPayload): r is EvidenceAnalysisResult {
   return (r as EvidenceAnalysisResult).kind === 'evidence';
+}
+
+/** A real analysis recorded from a past run of the actual product (Mojave). */
+export interface RecordedRunResult {
+  kind: 'recorded';
+  datasetId: string;
+  recordedAt: string;
+  note: string;
+  provenance: {
+    provider: string;
+    productId: string;
+    productType: string;
+    platform: string;
+    doi?: string;
+    referenceTime: string;
+    secondaryTime: string;
+    temporalBaselineDays: number;
+    sourceUrl: string;
+    dataClass: 'real';
+    qualityNotes?: string[];
+  };
+  geometry: {
+    wavelength: number;
+    incidenceAngleDeg: number;
+    headingDeg: number;
+    passDirection: 'ascending' | 'descending';
+    lookDirection: 'right' | 'left';
+    numberOfLooks: number;
+  };
+  footprintPolygon?: [number, number][];
+  center?: { lat: number; lon: number };
+  params: Record<string, unknown>;
+  summary: {
+    validPixelCount: number;
+    validFraction: number;
+    analysedAreaKm2: number;
+    coherenceMedian: number;
+    affectedAreaKm2: number;
+    systematicIonoFloorM: number;
+    medianSigmaM: number;
+    connectedComponentCount: number;
+    [k: string]: unknown;
+  };
+  measuredFindings?: {
+    maxAbsLosM: number;
+    zeroPhaseFraction?: number;
+    distribution?: Array<{ label: string; fraction: number }>;
+    coherenceGte01Fraction?: number;
+    ccGateExcludedFraction?: number;
+    ionoScreenStdRad?: number;
+    ionoScreenUncertaintyMedianRad?: number;
+    [k: string]: unknown;
+  };
+  event?: {
+    id: string;
+    magnitude: number;
+    magType?: string;
+    place: string;
+    time: string;
+    lat: number;
+    lon: number;
+    depthKm: number;
+    url: string;
+    insideAcquisitionWindow?: boolean;
+    note?: string;
+  };
+  narrative: { verdict?: string; whatChanged: string; howMuch: string; reliability: string };
+  attributionSummary?: { earthquake?: string; nullHypothesis?: string; methodNote?: string };
+  warnings: string[];
+}
+
+export function isRecordedResult(r: AnalysisPayload): r is RecordedRunResult {
+  return (r as RecordedRunResult).kind === 'recorded';
 }
 
 export interface HealthPayload {

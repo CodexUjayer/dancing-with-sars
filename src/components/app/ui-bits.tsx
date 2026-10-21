@@ -81,20 +81,28 @@ export function EventRow({ ev }: { ev: UsgsEventLite }) {
 export interface DatasetLike {
   dataClass: 'real' | 'synthetic' | 'derived';
   mode: 'quantitative' | 'evidence';
-  availability: Pick<DatasetAvailability, 'state'>;
+  availability: Pick<DatasetAvailability, 'state' | 'recorded'>;
 }
 
 /**
  * Plain-language readiness of a dataset, combining availability (can we run
- * anything?) with data class (is it real or a demonstration?). Always uses
+ * anything?) with data class (is it real or a demonstration?) and whether a
+ * real recorded analysis exists despite missing data. Always uses
  * text + icon, never color alone.
  */
 export function readinessOf(d: DatasetLike): {
   label: string;
-  icon: 'check' | 'demo' | 'unavailable';
+  icon: 'check' | 'demo' | 'unavailable' | 'recorded';
   detail: string;
 } {
   if (d.availability.state !== 'available') {
+    if (d.availability.recorded) {
+      return {
+        label: 'Recorded result',
+        icon: 'recorded',
+        detail: 'Real analysis recorded from the actual product — the source data is no longer on this server, but the result can be viewed.',
+      };
+    }
     return {
       label: 'Data unavailable',
       icon: 'unavailable',
@@ -134,7 +142,9 @@ export function ReadinessBadge({ d }: { d: DatasetLike }) {
       ? 'border-[#2C5F58] bg-[#EDF4F1] text-[#2C5F58]'
       : r.icon === 'demo'
         ? 'border-[#B08D57] bg-[#F7F2E7] text-[#7A6438]'
-        : 'border-[#9E3B2C] bg-[#FBF3EF] text-[#9E3B2C]';
+        : r.icon === 'recorded'
+          ? 'border-[#B08D57] bg-[#F7F2E7] text-[#7A6438]'
+          : 'border-[#9E3B2C] bg-[#FBF3EF] text-[#9E3B2C]';
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.05em] ${cls}`}
@@ -149,6 +159,12 @@ export function ReadinessBadge({ d }: { d: DatasetLike }) {
         <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" aria-hidden>
           <rect x="3" y="1.5" width="6" height="3" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
           <path d="M6 4.5v3M4 10.5h4M6 7.5v3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        </svg>
+      )}
+      {r.icon === 'recorded' && (
+        <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" aria-hidden>
+          <rect x="2" y="6.5" width="8" height="4" rx="0.8" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M4 6.5V5a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
         </svg>
       )}
       {r.icon === 'unavailable' && (

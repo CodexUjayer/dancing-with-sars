@@ -1,7 +1,7 @@
 # Validation
 
 Recorded 2026-10-21, from the actual test run in this repository
-(`bun test`): **90 tests, 90 pass, 0 fail, 498 assertions, ~4.1 s** (final pass, 2026-10-21: +4 synthetic-attribution honesty regression tests).
+(`bun test`): **103 tests, 103 pass, 0 fail, 533 assertions, ~4.1 s** (feature pass, 2026-10-21 evening: +13 tests for the verdict engine, pair grouping and the client GeoTIFF writer).
 (Includes the remediation suites: clean-clone registry behaviour, event
 selection, forward-model coordinate alignment, detection statistics.)
 
@@ -32,11 +32,11 @@ API · **DOC** = documented claim from a prior run, not re-executable here.
 | Forward model anchored at epicentre | UT | synthetic grids | same | bit-identical values on shifted grids; peak follows the event | passes (max diff 0.0 on probe points) | **REPRODUCED** | UTM-only; polar-stereographic granules disable the check |
 | LA 2008 sample: honest negative below iono floor | INT | committed derived product (`data/derived/nisar-la-2008`, checksums in `docs/data-manifest.md`) | `bun test tests/science/pipeline.test.ts` | floor reported; no detection above floor | valid 14.6%, coh. median 0.57, ref σ 18.5 mm, iono floor 81.0 mm (basis: uncertainty), median threshold 81.0 mm, max apparent LOS 89.4 mm → 0.013 km² stray pixels only | **REPRODUCED** | real product, but no independent geodetic comparison exists |
 | Extractor validates GUNW structure | UT | synthetic HDF5 fixtures | `python3 tools/test_extract_gunw.py` | 26 checks pass | 26/26 pass (exit 0) | **REPRODUCED** | synthetic fixtures only; real-product extraction verified once for LA |
-| Mojave 2026 quantitative analysis (81→72 mm floor, M4.06 cross-match, 48 mm max LOS) | DOC + LIVE | operational granule analysed 2026-10-20 | `tools/fetch_nisar_granule.py` + `tools/extract_gunw.py` + `POST /api/analyses` | — | — | **NOT REPRODUCED** | the 2.58 GB granule was not retained in this environment (data/ is not committed); the derived directory is absent and the dataset correctly reports state `missing` with instructions. The figures stand as documented observations of that run, not re-verified results. |
+| Mojave 2026 quantitative analysis (81→72 mm floor, M4.06 cross-match, 48 mm max LOS) | DOC + LIVE | operational granule analysed 2026-10-20 | `tools/fetch_nisar_granule.py` + `tools/extract_gunw.py` + `POST /api/analyses` | — | — | **RECORDED RESULT SERVED** | the 2.58 GB granule was not retained (data/ is not committed; re-download needs Earthdata credentials), so the pipeline still refuses to re-run (dataset state `missing`, POST 409). The recorded figures are now served honestly as a labelled recorded result (data/derived/nisar-mojave-2026/recorded_run.json + `GET /api/datasets/real-nisar-mojave-2026` → recordedRun), including the real CMR footprint polygon and the real USGS M4.06 event (ci41478192, verified live 2026-10-21). These remain documented observations of the 2026-10-20 run, not re-computed results. |
 | Panama evidence (granule catalogue, M7.7 event, browse imagery) | INT + LIVE | committed CMR/USGS caches + live re-verification | `POST /api/analyses {"datasetId":"evidence-panama-2026"}` | granules bracket event; conservative language | 3 granules, selection by explicit criteria (epicentre containment), narrative uses the mandated "has not yet been established" wording | **REPRODUCED** | browse imagery ≠ science rasters; no quantitative claim |
 | USGS/CMR live queries work | LIVE | FDSN + CMR APIs | UI live checks / `curl` | events and granules return | verified during browser E2E (2026-10-21) | **REPRODUCED** | network-dependent; app degrades explicitly on failure |
 
-## 2. Test inventory (90 tests)
+## 2. Test inventory (103 tests)
 
 ### tests/science/okada.test.ts — the physics engine
 Unchanged from the pre-remediation suite: 24 benchmark geometries × 3 slip

@@ -3,54 +3,75 @@
 /**
  * Results panel — plain-language first, technical evidence one click away.
  *
- * FINAL-PASS UI (plain-language redesign). The result is presented in this
- * order, per the product story:
- *   1. What did we find?        (detection banner + key numbers)
- *   2. How certain are we?      (uncertainty in plain words)
- *   3. What could explain it?   (candidate explanations + model check)
- *   4. What are the limitations?(honest scope)
- *   5. Where can I inspect the technical evidence? ("Advanced results")
+ * ORDER (product story):
+ *   1. The verdict — one sentence, five seconds (VerdictBanner).
+ *   2. What did we find?        (key numbers + narrative)
+ *   3. The charts               (histogram + profile, from the real grids)
+ *   4. How certain are we?      (uncertainty in plain words)
+ *   5. What could explain it?   (seismic timeline + hypotheses + model check)
+ *   6. What are the limitations?(honest scope + "why can't I see anything?")
+ *   7. Advanced results         (collapsible technical evidence)
  *
- * Scientific language rules preserved from the remediation: detection is
- * never called proof of motion; the null screen stays "exploratory";
- * agreement with a forward model is "consistent", never "caused by";
- * uncorrected atmospheric contributions keep the "apparent" qualifier.
+ * Scientific language rules preserved: detection is never proof of motion;
+ * the null screen stays "exploratory"; model agreement is "consistent",
+ * never "caused by"; uncorrected atmospheric contributions keep the
+ * "apparent" qualifier; the recorded Mojave result is labelled as recorded.
  */
 
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, AlertTriangle, CheckCircle2, HelpCircle, Ruler, ShieldQuestion, Lightbulb, Microscope } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { ChevronDown, ChevronRight, AlertTriangle, CheckCircle2, HelpCircle, Ruler, ShieldQuestion, Lightbulb, Microscope, ArchiveRestore } from 'lucide-react';
 import type { AnalysisResult } from '@/lib/science/types';
 import { HypothesisStatusBadge, MicroLabel, Stat, WhatIsThis, EventRow, fmtMm, fmtKm2 } from './ui-bits';
 import { EvidenceViewer } from './evidence-viewer';
-import type { EvidenceAnalysisResult, PanamaGranule } from './types';
+import type { EvidenceAnalysisResult, PanamaGranule, RecordedRunResult } from './types';
+import type { DecodedGrids } from './decode';
+import { VerdictBanner, HistogramCard, ProfileCard, SeismicTimeline, WhyCantISeeAnything, SignalVsNoiseCard } from './charts';
+import { computeRecordedVerdict, areaLabel, outcomeOf } from '@/lib/science/verdict';
 
-/** Mirror of the pipeline's credibility criterion (pipeline.ts Stage C). */
-function detectionOutcome(s: AnalysisResult['summary']): 'none' | 'inconclusive' | 'detected' {
-  const minCredibleAreaKm2 = Math.max(1, s.pixelAreaKm2 * 4);
-  if (s.affectedAreaKm2 === 0) return 'none';
-  return s.affectedAreaKm2 < minCredibleAreaKm2 ? 'inconclusive' : 'detected';
+export interface ResultGrids {
+  grids: DecodedGrids | null;
+  gridsMeta?: {
+    xStart: number; xSpacing: number; yStart: number; ySpacing: number;
+    width: number; height: number; epsg: number;
+  };
+  isPrediction?: boolean;
 }
 
-export function QuantitativeResults({ result }: { result: AnalysisResult & { runId?: string } }) {
+/* ================================================================== */
+/* Quantitative results                                                */
+/* ================================================================== */
+
+export function QuantitativeResults({
+  result,
+  rg,
+  acquisitionTimes,
+}: {
+  result: AnalysisResult & { runId?: string };
+  rg: ResultGrids;
+  acquisitionTimes?: { referenceTime: string; secondaryTime: string };
+}) {
   const s = result.summary;
   const v = result.validation;
   const fm = result.attribution.forwardModelCheck;
-  const outcome = detectionOutcome(s);
+  const outcome = outcomeOf(s);
   const isDemo = result.datasetId.startsWith('synthetic-');
 
   return (
     <div className="space-y-6">
-      {/* ---------- 1 · What did we find? ---------- */}
+      {/* ---------- 1 · The verdict ---------- */}
+      <VerdictBanner result={result} />
+      {isDemo && (
+        <p className="-mt-3 rounded-lg border border-[#B0714E]/40 bg-[#F7EBE2] px-3 py-2 text-[11.5px] leading-4 text-[#8F4A2B]">
+          Demonstration data: the &ldquo;right answer&rdquo; is known by construction, so you can see
+          how the analysis behaves on a controlled example. It is not an observation of the Earth.
+        </p>
+      )}
+
+      {/* ---------- 2 · What did we find? ---------- */}
       <section aria-labelledby="what-found">
-        <OutcomeBanner outcome={outcome} />
-        <h2 id="what-found" className="sr-only">What did we find?</h2>
-        {isDemo && (
-          <p className="mt-3 rounded-lg border border-[#B0714E]/40 bg-[#F7EBE2] px-3 py-2 text-[11.5px] leading-4 text-[#8F4A2B]">
-            Demonstration data: the &ldquo;right answer&rdquo; is known by construction, so you can see
-            how the analysis behaves on a controlled example. It is not an observation of the Earth.
-          </p>
-        )}
-        <p className="mt-3 text-[13px] leading-[1.5rem] text-[#4A443C]">{result.narrative.whatChanged}</p>
+        <h2 id="what-found" className="text-[13.5px] font-semibold text-[#1C1A17]">What did we find?</h2>
+        <p className="mt-2 text-[13px] leading-[1.5rem] text-[#4A443C]">{result.narrative.whatChanged}</p>
         {(outcome === 'detected' || outcome === 'inconclusive') && (
           <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3.5">
             {s.maxAwayM > 0.0005 && (
@@ -73,7 +94,17 @@ export function QuantitativeResults({ result }: { result: AnalysisResult & { run
         </p>
       </section>
 
-      {/* ---------- 2 · How certain are we? ---------- */}
+      {/* ---------- 3 · The charts ---------- */}
+      {rg.grids && (
+        <section aria-label="Charts of the measurements" className="space-y-4 rounded-xl border border-[#EFEAE2] bg-white p-3.5 sm:p-4">
+          <HistogramCard grids={rg.grids} summary={s} isPrediction={rg.isPrediction} />
+          <div className="border-t border-[#EFEAE2] pt-3.5">
+            <ProfileCard grids={rg.grids} gridsMeta={rg.gridsMeta} summary={s} isPrediction={rg.isPrediction} />
+          </div>
+        </section>
+      )}
+
+      {/* ---------- 4 · How certain are we? ---------- */}
       <section aria-labelledby="how-certain">
         <SectionTitle icon={<Ruler className="h-3.5 w-3.5" aria-hidden />} id="how-certain">
           How certain are we?
@@ -100,7 +131,7 @@ export function QuantitativeResults({ result }: { result: AnalysisResult & { run
         </p>
       </section>
 
-      {/* ---------- 3 · What could explain it? ---------- */}
+      {/* ---------- 5 · What could explain it? ---------- */}
       <section aria-labelledby="what-explains">
         <SectionTitle icon={<Lightbulb className="h-3.5 w-3.5" aria-hidden />} id="what-explains">
           What could explain it?
@@ -109,6 +140,19 @@ export function QuantitativeResults({ result }: { result: AnalysisResult & { run
           Candidate explanations, each with the evidence for and against. None of these is a
           diagnosis — a single radar view cannot prove what caused a change.
         </p>
+
+        {/* Seismic context: the acquisition window with real events */}
+        {acquisitionTimes && (
+          <div id="seismic-context" className="mt-3 scroll-mt-24">
+            <SeismicTimeline
+              referenceTime={acquisitionTimes.referenceTime}
+              secondaryTime={acquisitionTimes.secondaryTime}
+              events={result.attribution.events}
+              primaryEventId={result.attribution.events[0]?.id}
+            />
+          </div>
+        )}
+
         <ul className="mt-3 space-y-2">
           {result.attribution.hypotheses.map((h) => (
             <HypothesisRow key={h.id} h={h} />
@@ -142,12 +186,17 @@ export function QuantitativeResults({ result }: { result: AnalysisResult & { run
         <p className="mt-3 text-[11px] leading-4 text-[#8A837B]">{result.attribution.methodNote}</p>
       </section>
 
-      {/* ---------- 4 · What are the limitations? ---------- */}
+      {/* ---------- 6 · Limitations + why-empty ---------- */}
       <section aria-labelledby="limits">
         <SectionTitle icon={<ShieldQuestion className="h-3.5 w-3.5" aria-hidden />} id="limits">
           What are the limitations?
         </SectionTitle>
-        <ul className="mt-2 space-y-1.5 text-[12.5px] leading-[1.45rem] text-[#4A443C]">
+        {(outcome === 'none' || outcome === 'inconclusive') && (
+          <div className="mt-3">
+            <WhyCantISeeAnything summary={s} />
+          </div>
+        )}
+        <ul className="mt-3 space-y-1.5 text-[12.5px] leading-[1.45rem] text-[#4A443C]">
           <Limitation>
             This is a single comparison of two radar images. Slow, ongoing processes (months to
             years) cannot be separated from one-off events.
@@ -194,13 +243,218 @@ export function QuantitativeResults({ result }: { result: AnalysisResult & { run
         )}
       </section>
 
-      {/* ---------- 5 · Advanced results ---------- */}
+      {/* ---------- 7 · Advanced results ---------- */}
       <AdvancedResults result={result} v={v} />
     </div>
   );
 }
 
-/** Evidence-mode results (Panama): real records + labelled prediction. */
+/* ================================================================== */
+/* Recorded results (Mojave)                                           */
+/* ================================================================== */
+
+export function RecordedResults({ rec }: { rec: RecordedRunResult }) {
+  const s = rec.summary;
+  const mf = rec.measuredFindings;
+  const v = computeRecordedVerdict({ summary: s as never, measuredFindings: mf });
+  const floorMm = (s.systematicIonoFloorM ?? 0) * 1000;
+  const signalMm = (mf?.maxAbsLosM ?? 0) * 1000;
+  return (
+    <div className="space-y-6">
+      {/* verdict */}
+      <motion.div
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35 }}
+        className="rounded-xl border border-[#D8D2C6] bg-[#F7F4EE] px-4 py-4"
+        role="status"
+      >
+        <p className="flex items-start gap-2.5 text-[15px] font-semibold leading-6 text-[#1C1A17]">
+          <ArchiveRestore className="mt-0.5 h-4.5 w-4.5 shrink-0" size={18} aria-hidden />
+          {rec.narrative.verdict ?? v.headline}
+        </p>
+        <p className="mt-1.5 pl-7 text-[12.5px] leading-[1.45rem] text-[#6F6862]">{v.support}</p>
+      </motion.div>
+
+      {/* recorded banner */}
+      <div className="rounded-lg border border-[#B08D57]/45 bg-[#F7F2E7] px-3.5 py-3" role="note">
+        <p className="text-[12px] leading-[1.45rem] text-[#7A6438]">
+          <strong className="font-semibold">Recorded result.</strong> This analysis was run on the real
+          {' '}{rec.provenance.productId.slice(0, 42)}… product on {rec.recordedAt.slice(0, 10)}. The 2.6 GB source file
+          is no longer stored on this server, so it cannot currently be re-run — every number below was
+          captured from that run, and the map shows the granule footprint and the real in-frame earthquake
+          rather than a measurement layer.
+        </p>
+      </div>
+
+      {/* what did we find */}
+      <section aria-labelledby="rec-what-found">
+        <h2 id="rec-what-found" className="text-[13.5px] font-semibold text-[#1C1A17]">What did we find?</h2>
+        <p className="mt-2 text-[13px] leading-[1.5rem] text-[#4A443C]">{rec.narrative.whatChanged}</p>
+        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3.5">
+          <Stat label="Largest apparent signal" value={`${signalMm.toFixed(0)} mm`} title="Largest apparent LOS range change over the single valid unwrapping region (recorded)." />
+          <Stat label="Ionosphere noise floor" value={`± ${floorMm.toFixed(0)} mm`} title="Systematic floor from the supplied-but-unapplied ionospheric screen (recorded)." />
+          <Stat label="Measured area" value={areaLabel(s.analysedAreaKm2)} title="Area that passed the quality mask in the recorded run." />
+          <Stat label="Reliable-signal coverage" value={`${(s.validFraction * 100).toFixed(1)}% of the frame`} title="Only this fraction of the frame could be measured at all (recorded)." />
+          {mf?.zeroPhaseFraction !== undefined && (
+            <Stat label="No-change share of valid area" value={`${(mf.zeroPhaseFraction * 100).toFixed(1)}%`} title="Share of valid pixels with exactly-zero phase — a stable surface (recorded)." />
+          )}
+          <Stat label="Typical measurement noise" value={`± ${fmtMm(s.medianSigmaM)}`} title="Median per-pixel 1σ uncertainty (recorded)." />
+        </div>
+      </section>
+
+      {/* signal vs noise chart */}
+      <section aria-label="Signal versus noise chart" className="rounded-xl border border-[#EFEAE2] bg-white p-3.5 sm:p-4">
+        <SignalVsNoiseCard
+          signalMm={signalMm}
+          floorMm={floorMm}
+          sigmaMm={(s.medianSigmaM ?? 0) * 1000}
+          zeroFraction={mf?.zeroPhaseFraction}
+        />
+        {mf?.distribution && (
+          <div className="mt-3 border-t border-[#EFEAE2] pt-3">
+            <MicroLabel>Recorded distribution of the measurable region</MicroLabel>
+            <div className="mt-2 flex h-8 w-full overflow-hidden rounded-md border border-[#E7E2DA]">
+              {mf.distribution.map((d, i) => (
+                <div
+                  key={i}
+                  className={`flex items-center justify-center ${i === 0 ? 'bg-[#2C5F58]/15' : 'bg-[#B0714E]/35'}`}
+                  style={{ width: `${d.fraction * 100}%` }}
+                  title={`${d.label}: ${(d.fraction * 100).toFixed(1)}%`}
+                >
+                  {d.fraction > 0.08 && (
+                    <span className="font-mono text-[9.5px] text-[#4A443C]">{(d.fraction * 100).toFixed(1)}%</span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <ul className="mt-1.5 space-y-0.5">
+              {mf.distribution.map((d, i) => (
+                <li key={i} className="text-[10.5px] leading-4 text-[#8A837B]">
+                  <span className={`mr-1.5 inline-block h-2 w-2 rounded-sm align-middle ${i === 0 ? 'bg-[#2C5F58]/30' : 'bg-[#B0714E]/50'}`} aria-hidden />
+                  {d.label} — {(d.fraction * 100).toFixed(1)}%
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+
+      {/* seismic context */}
+      <section id="seismic-context" aria-label="Earthquake context">
+        {rec.event && (
+          <>
+            <SeismicTimeline
+              referenceTime={rec.provenance.referenceTime}
+              secondaryTime={rec.provenance.secondaryTime}
+              events={[rec.event as never]}
+              primaryEventId={rec.event.id}
+            />
+            <div className="mt-3 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3.5">
+              <MicroLabel>The earthquake inside the frame</MicroLabel>
+              <ul className="mt-2">
+                <EventRow ev={rec.event as never} />
+              </ul>
+              <p className="mt-2 text-[12px] leading-[1.45rem] text-[#4A443C]">
+                A real M{rec.event.magnitude.toFixed(2)} earthquake occurred inside the radar frame
+                between the two acquisitions. The recorded attribution run classified coseismic
+                deformation as <strong>insufficient evidence</strong>: the apparent changes (≤ {signalMm.toFixed(0)} mm)
+                cannot be distinguished from the {floorMm.toFixed(0)} mm ionospheric contamination, and no
+                fault geometry was invented to fill the gap left by the missing published mechanism.
+              </p>
+              {rec.attributionSummary?.methodNote && (
+                <p className="mt-1.5 text-[11px] leading-4 text-[#8A837B]">{rec.attributionSummary.methodNote}</p>
+              )}
+            </div>
+          </>
+        )}
+      </section>
+
+      {/* how certain */}
+      <section aria-labelledby="rec-how-certain">
+        <SectionTitle icon={<Ruler className="h-3.5 w-3.5" aria-hidden />} id="rec-how-certain">
+          How certain are we?
+        </SectionTitle>
+        <p className="mt-2 text-[13px] leading-[1.5rem] text-[#4A443C]">{rec.narrative.reliability}</p>
+        <div className="mt-3">
+          <WhyCantISeeAnything summary={s as never} />
+        </div>
+      </section>
+
+      {/* limitations */}
+      <section aria-labelledby="rec-limits">
+        <SectionTitle icon={<ShieldQuestion className="h-3.5 w-3.5" aria-hidden />} id="rec-limits">
+          What are the limitations?
+        </SectionTitle>
+        <ul className="mt-2 space-y-1.5 text-[12.5px] leading-[1.45rem] text-[#4A443C]">
+          <Limitation>
+            Recorded, not re-run: the source product is gone from this server, so these figures cannot
+            currently be regenerated — restoring them needs an Earthdata-authenticated re-download
+            (instructions in &ldquo;About this data&rdquo;).
+          </Limitation>
+          <Limitation>
+            Movement is measured only toward or away from the satellite, and the un-applied
+            ionospheric correction dominates this pair&rsquo;s error budget.
+          </Limitation>
+          <Limitation>
+            Only {areaLabel(s.analysedAreaKm2)} of the frame was measurable at all; the rest of the
+            scene had no reliable signal.
+          </Limitation>
+        </ul>
+        {rec.warnings.length > 0 && (
+          <div className="mt-3 rounded-lg border border-[#E7D9B8] bg-[#FCF8EE] p-3">
+            <div className="flex items-center gap-2 text-[12px] font-medium text-[#7A6438]">
+              <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> Notes from the recorded run
+            </div>
+            <ul className="mt-1.5 list-inside list-disc space-y-1 text-[11.5px] leading-[1.4rem] text-[#7A6438]">
+              {rec.warnings.map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </section>
+
+      {/* provenance / advanced */}
+      <section className="rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3.5">
+        <MicroLabel>About the recorded product</MicroLabel>
+        <dl className="mt-2 space-y-1.5 text-[11px] leading-4">
+          <div className="flex gap-2">
+            <dt className="w-24 shrink-0 font-medium uppercase tracking-[0.05em] text-[#8A837B]">Provider</dt>
+            <dd className="text-[#4A443C]">{rec.provenance.provider}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="w-24 shrink-0 font-medium uppercase tracking-[0.05em] text-[#8A837B]">Pair</dt>
+            <dd className="font-mono text-[10px] text-[#4A443C]">
+              {rec.provenance.referenceTime.slice(0, 10)} → {rec.provenance.secondaryTime.slice(0, 10)} · {rec.provenance.temporalBaselineDays}-day baseline
+            </dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="w-24 shrink-0 font-medium uppercase tracking-[0.05em] text-[#8A837B]">Geometry</dt>
+            <dd className="font-mono text-[10px] text-[#4A443C]">
+              {rec.geometry.passDirection} {rec.geometry.lookDirection}-looking · incidence {rec.geometry.incidenceAngleDeg.toFixed(1)}° · {(rec.geometry.wavelength * 100).toFixed(1)} cm wavelength
+            </dd>
+          </div>
+          {rec.provenance.doi && (
+            <div className="flex gap-2">
+              <dt className="w-24 shrink-0 font-medium uppercase tracking-[0.05em] text-[#8A837B]">DOI</dt>
+              <dd className="font-mono text-[10px]">
+                <a href={`https://doi.org/${rec.provenance.doi}`} target="_blank" rel="noopener noreferrer" className="text-[#4A443C] underline decoration-[#D8D2C6] underline-offset-2">
+                  {rec.provenance.doi}
+                </a>
+              </dd>
+            </div>
+          )}
+        </dl>
+      </section>
+    </div>
+  );
+}
+
+/* ================================================================== */
+/* Evidence-mode results (Panama)                                      */
+/* ================================================================== */
+
 export function EvidenceResults({
   result,
   onGranulePolys,
@@ -208,15 +462,16 @@ export function EvidenceResults({
   result: EvidenceAnalysisResult;
   onGranulePolys?: (polys: Array<{ granule: PanamaGranule; poly: [number, number][] }>) => void;
 }) {
+  const ev = result.event;
   return (
     <div className="space-y-6">
       <section aria-label="What did we find">
-        <div className="rounded-lg border border-[#2C5F58]/40 bg-[#EDF4F1] px-4 py-3.5" role="status">
-          <p className="flex items-center gap-2 text-[13.5px] font-semibold text-[#2C5F58]">
-            <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden />
+        <div className="rounded-xl border border-[#2C5F58]/40 bg-[#EDF4F1] px-4 py-4" role="status">
+          <p className="flex items-start gap-2.5 text-[15px] font-semibold leading-6 text-[#2C5F58]">
+            <CheckCircle2 className="mt-0.5 h-4.5 w-4.5 shrink-0" size={18} aria-hidden />
             Real earthquake, real radar data — measurement pending
           </p>
-          <p className="mt-1.5 text-[12px] leading-[1.45rem] text-[#2C5F58]">
+          <p className="mt-1.5 pl-7 text-[12px] leading-[1.45rem] text-[#2C5F58]">
             A strong earthquake occurred here, and radar data covering it exists. Measuring the ground
             movement requires downloading the full data product with a (free) NASA Earthdata account,
             which is not configured on this server. This page shows the real evidence and a clearly
@@ -224,6 +479,17 @@ export function EvidenceResults({
           </p>
         </div>
         <p className="mt-3 text-[13px] leading-[1.5rem] text-[#4A443C]">{result.narrative.whatChanged}</p>
+        {ev && (
+          <div className="mt-3">
+            <SeismicTimeline
+              referenceTime={new Date(Date.parse(ev.time) - 12 * 86400000).toISOString()}
+              secondaryTime={new Date(Date.parse(ev.time) + 12 * 86400000).toISOString()}
+              events={[ev, ...result.liveEvents.filter((e) => e.id !== ev.id)]}
+              primaryEventId={ev.id}
+              compact
+            />
+          </div>
+        )}
         {result.warnings.length > 0 && (
           <ul className="mt-3 list-inside list-disc space-y-1 rounded-lg border border-[#E7D9B8] bg-[#FCF8EE] p-3 text-[11.5px] leading-[1.4rem] text-[#7A6438]">
             {result.warnings.map((w, i) => (
@@ -237,49 +503,9 @@ export function EvidenceResults({
   );
 }
 
-function OutcomeBanner({ outcome }: { outcome: 'none' | 'inconclusive' | 'detected' }) {
-  if (outcome === 'detected') {
-    return (
-      <div className="rounded-lg border border-[#2C5F58]/40 bg-[#EDF4F1] px-4 py-3.5" role="status">
-        <p className="flex items-center gap-2 text-[13.5px] font-semibold text-[#2C5F58]">
-          <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden />
-          Possible change detected
-        </p>
-        <p className="mt-1.5 text-[12px] leading-[1.45rem] text-[#2C5F58]">
-          The radar measurements show a pattern that passes the current detection threshold. This does
-          not yet prove that the ground moved by this amount, or identify the cause.
-        </p>
-      </div>
-    );
-  }
-  if (outcome === 'none') {
-    return (
-      <div className="rounded-lg border border-[#D8D2C6] bg-[#F7F4EE] px-4 py-3.5" role="status">
-        <p className="flex items-center gap-2 text-[13.5px] font-semibold text-[#4A443C]">
-          <HelpCircle className="h-4 w-4 shrink-0" aria-hidden />
-          No change detected above the threshold
-        </p>
-        <p className="mt-1.5 text-[12px] leading-[1.45rem] text-[#6F6862]">
-          The analysis did not find a strong enough signal to pass the selected threshold. Smaller
-          changes may still be present.
-        </p>
-      </div>
-    );
-  }
-  return (
-    <div className="rounded-lg border border-[#B08D57]/50 bg-[#F7F2E7] px-4 py-3.5" role="status">
-      <p className="flex items-center gap-2 text-[13.5px] font-semibold text-[#7A6438]">
-        <HelpCircle className="h-4 w-4 shrink-0" aria-hidden />
-        Inconclusive
-      </p>
-      <p className="mt-1.5 text-[12px] leading-[1.45rem] text-[#7A6438]">
-        The available measurements are not clear enough to determine whether a change occurred. Only
-        isolated stray pixels crossed the threshold — at this signal quality that is consistent with
-        measurement noise.
-      </p>
-    </div>
-  );
-}
+/* ================================================================== */
+/* shared pieces                                                       */
+/* ================================================================== */
 
 function SectionTitle({ icon, id, children }: { icon: React.ReactNode; id: string; children: React.ReactNode }) {
   return (

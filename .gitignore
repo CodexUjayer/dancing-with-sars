@@ -54,7 +54,15 @@ prompt
 # and the Python virtualenv must never be committed — and Tailwind 4's
 # automatic content scanner respects these ignores (a 2.58 GB granule in
 # data/raw once OOM-killed the dev server's CSS build).
-/data/
+# NOTE: /data/* (not /data/) so that recorded real-analysis results can be
+# re-included below — git cannot re-include files under a fully excluded dir.
+/data/*
+!/data/derived/
+/data/derived/*
+# Exception: the recorded real-analysis result is a small (~6 KB) first-class
+# story artifact and must survive fresh clones.
+!/data/derived/nisar-mojave-2026/
+!/data/derived/nisar-mojave-2026/recorded_run.json
 /tools/venv/
 
 server.log

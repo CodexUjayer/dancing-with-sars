@@ -53,6 +53,14 @@ export interface DatasetAvailability {
   invalidFiles: Array<{ file: string; reason: string }>;
   /** Plain-language explanation for the UI/API. */
   explanation: string;
+  /**
+   * When the raw data is absent but a REAL recorded analysis of this dataset
+   * exists (captured from a past run of the actual product and stored as
+   * recorded_run.json), the availability carries a pointer to it. The state
+   * remains 'missing' — the pipeline still refuses to re-run — but the UI can
+   * offer the recorded result as an honest, clearly-labelled alternative.
+   */
+  recorded?: { recordedAt: string; note: string };
 }
 
 function available(): DatasetAvailability {
@@ -229,6 +237,112 @@ function readUint16(file: string): Uint16Array {
   return out;
 }
 
+/** Shape of data/derived/<dir>/recorded_run.json (see the Mojave record). */
+export interface RecordedRun {
+  datasetId: string;
+  note: string;
+  recordedAt: string;
+  provenance: {
+    provider: string;
+    productId: string;
+    productType: string;
+    platform: string;
+    doi?: string;
+    referenceTime: string;
+    secondaryTime: string;
+    temporalBaselineDays: number;
+    sourceUrl: string;
+    dataClass: 'real';
+    qualityNotes?: string[];
+  };
+  geometry: {
+    wavelength: number;
+    incidenceAngleDeg: number;
+    headingDeg: number;
+    passDirection: 'ascending' | 'descending';
+    lookDirection: 'right' | 'left';
+    numberOfLooks: number;
+  };
+  footprintPolygon: [number, number][];
+  center?: { lat: number; lon: number };
+  params: AnalysisParams;
+  summary: {
+    validPixelCount: number;
+    validFraction: number;
+    analysedAreaKm2: number;
+    coherenceMedian: number;
+    affectedAreaKm2: number;
+    systematicIonoFloorM: number;
+    medianSigmaM: number;
+    connectedComponentCount: number;
+    [k: string]: unknown;
+  };
+  measuredFindings?: {
+    maxAbsLosM: number;
+    zeroPhaseFraction?: number;
+    distribution?: Array<{ label: string; fraction: number }>;
+    [k: string]: unknown;
+  };
+  event?: {
+    id: string;
+    magnitude: number;
+    magType?: string;
+    place: string;
+    time: string;
+    lat: number;
+    lon: number;
+    depthKm: number;
+    url: string;
+    insideAcquisitionWindow?: boolean;
+    note?: string;
+  };
+  narrative: { verdict?: string; whatChanged: string; howMuch: string; reliability: string };
+  attributionSummary?: { earthquake?: string; nullHypothesis?: string; methodNote?: string };
+  warnings: string[];
+}
+
+/**
+ * Attach a `recorded` pointer to a missing-data availability when a valid
+ * recorded_run.json sits in the dataset directory. Never throws; a malformed
+ * record is ignored (the plain missing state then applies).
+ */
+function withRecordedIfPresent(
+  entry: DerivedRegistryEntry,
+  dir: string,
+  base: DatasetAvailability,
+): DatasetAvailability {
+  try {
+    const p = path.join(dir, 'recorded_run.json');
+    if (!fs.existsSync(p)) return base;
+    const rec = JSON.parse(fs.readFileSync(p, 'utf-8')) as RecordedRun;
+    if (rec?.datasetId !== entry.id || !rec?.summary || !rec?.narrative) return base;
+    return {
+      ...base,
+      recorded: {
+        recordedAt: rec.recordedAt,
+        note: 'A real, recorded analysis of this dataset exists and can be viewed.',
+      },
+    };
+  } catch {
+    return base;
+  }
+}
+
+/** Load and validate the recorded run of a dataset, if one exists. */
+export function getRecordedRun(id: string): RecordedRun | undefined {
+  const entry = DERIVED_REGISTRY.find((e) => e.id === id);
+  if (!entry) return undefined;
+  try {
+    const p = path.join(_testRoots.derived, entry.dir, 'recorded_run.json');
+    if (!fs.existsSync(p)) return undefined;
+    const rec = JSON.parse(fs.readFileSync(p, 'utf-8')) as RecordedRun;
+    if (rec?.datasetId !== id || !rec?.summary || !rec?.narrative) return undefined;
+    return rec;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Structural validation of one derived dataset directory. Never throws.
  * Checks: presence of required files, meta.json parseability, raster byte
@@ -240,7 +354,7 @@ function probeDerivedDataset(entry: DerivedRegistryEntry): DatasetAvailability {
   const invalidFiles: Array<{ file: string; reason: string }> = [];
 
   if (!fs.existsSync(dir)) {
-    return {
+    return withRecordedIfPresent(entry, dir, {
       state: 'missing',
       missingFiles: entry.requiredFiles,
       invalidFiles: [],
@@ -248,21 +362,21 @@ function probeDerivedDataset(entry: DerivedRegistryEntry): DatasetAvailability {
         `The local derived-data directory for this dataset (${entry.dir}) does not exist. ` +
         `This is expected in a fresh clone — the scientific data products are not part of the repository. ` +
         `${entry.acquisitionInstructions}`,
-    };
+    });
   }
 
   for (const f of entry.requiredFiles) {
     if (!fs.existsSync(path.join(dir, f))) missingFiles.push(f);
   }
   if (missingFiles.length === entry.requiredFiles.length) {
-    return {
+    return withRecordedIfPresent(entry, dir, {
       state: 'missing',
       missingFiles,
       invalidFiles,
       explanation:
         `None of the required files for this dataset are present in ${entry.dir}. ` +
         `${entry.acquisitionInstructions}`,
-    };
+    });
   }
   if (missingFiles.length > 0) {
     return {
