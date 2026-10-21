@@ -257,12 +257,28 @@ export default function Home() {
                       : 'border-[#E7E2DA] hover:border-[#B8AFA2]'
                   }`}
                 >
-                  <DataClassBadge dataClass={d.dataClass} mode={d.mode} />
+                  <div className="flex items-center justify-between gap-2">
+                    <DataClassBadge dataClass={d.dataClass} mode={d.mode} />
+                    {d.availability.state !== 'available' && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full border border-[#E5C4B7] bg-[#FBF3EF] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-[0.05em] text-[#9E3B2C]"
+                        title={d.availability.explanation}
+                      >
+                        {d.availability.state === 'missing'
+                          ? 'data not downloaded'
+                          : d.availability.state === 'incomplete'
+                            ? 'incomplete data'
+                            : 'invalid data'}
+                      </span>
+                    )}
+                  </div>
                   <div className="mt-1.5 line-clamp-2 min-h-[2.4em] text-[12.5px] font-medium leading-[1.2em] text-[#1C1A17]">
                     {d.title}
                   </div>
                   <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.04em] text-[#8A837B]">
-                    {d.temporalBaselineDays}-day pair · {fmtDate(d.referenceTime)} → {fmtDate(d.secondaryTime)}
+                    {d.temporalBaselineDays > 0
+                      ? `${d.temporalBaselineDays}-day pair · ${fmtDate(d.referenceTime)} → ${fmtDate(d.secondaryTime)}`
+                      : 'local data required before analysis'}
                   </div>
                 </button>
               ),
@@ -340,15 +356,39 @@ export default function Home() {
                   </div>
                   <h1 className="mt-2 text-[15px] font-semibold leading-5 text-[#1C1A17]">{detail.title}</h1>
                   <p className="mt-1.5 text-[12.5px] leading-5 text-[#6F6862]">{detail.blurb}</p>
+                  {detail.availability.state !== 'available' && (
+                    <div className="mt-3 rounded-lg border border-[#E5C4B7] bg-[#FBF3EF] p-3" role="alert">
+                      <p className="text-[11.5px] font-medium text-[#9E3B2C]">
+                        Local data {detail.availability.state} — analysis not possible yet
+                      </p>
+                      <p className="mt-1 text-[11.5px] leading-4 text-[#9E3B2C]">{detail.availability.explanation}</p>
+                      {(detail.availability.missingFiles.length > 0 || detail.availability.invalidFiles.length > 0) && (
+                        <p className="mt-1.5 font-mono text-[10px] leading-4 text-[#9E3B2C]/80">
+                          {[...detail.availability.missingFiles,
+                            ...detail.availability.invalidFiles.map((f) => `${f.file} (${f.reason})`)].join(' · ')}
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <div className="mt-3.5 grid grid-cols-2 gap-x-4 gap-y-3">
                     <Fact label="Sensor" value={detail.provenance.platform} />
                     <Fact label="Product" value={detail.provenance.productType} />
-                    <Fact label="Reference scene" value={fmtDateTime(detail.provenance.referenceTime)} mono />
-                    <Fact label="Secondary scene" value={fmtDateTime(detail.provenance.secondaryTime)} mono />
-                    <Fact label="Wavelength" value={`${(detail.geometry.wavelength * 100).toFixed(1)} cm (L band)`} mono />
-                    <Fact label="Incidence" value={`${detail.geometry.incidenceAngleDeg.toFixed(1)}°`} mono />
-                    <Fact label="Pass / look" value={`${detail.geometry.passDirection} · ${detail.geometry.lookDirection}-looking`} />
-                    <Fact label="Looks" value={String(detail.numberOfLooks)} mono />
+                    {detail.provenance.referenceTime && (
+                      <Fact label="Reference scene" value={fmtDateTime(detail.provenance.referenceTime)} mono />
+                    )}
+                    {detail.provenance.secondaryTime && (
+                      <Fact label="Secondary scene" value={fmtDateTime(detail.provenance.secondaryTime)} mono />
+                    )}
+                    {detail.geometry && (
+                      <>
+                        <Fact label="Wavelength" value={`${(detail.geometry.wavelength * 100).toFixed(1)} cm (L band)`} mono />
+                        <Fact label="Incidence" value={`${detail.geometry.incidenceAngleDeg.toFixed(1)}°`} mono />
+                        <Fact label="Pass / look" value={`${detail.geometry.passDirection} · ${detail.geometry.lookDirection}-looking`} />
+                      </>
+                    )}
+                    {detail.numberOfLooks !== undefined && (
+                      <Fact label="Looks" value={String(detail.numberOfLooks)} mono />
+                    )}
                   </div>
                   {detail.provenance.doi && (
                     <a
@@ -366,13 +406,18 @@ export default function Home() {
                 <section aria-label="Analysis" className="rounded-xl border border-[#E7E2DA] bg-white p-5">
                   <Button
                     onClick={runAnalysis}
-                    disabled={running}
+                    disabled={running || detail.availability.state !== 'available'}
                     className="h-10 w-full gap-2 rounded-lg bg-[#1C1A17] text-[13px] font-medium text-white hover:bg-[#33302B] disabled:opacity-60"
                   >
                     {running ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
                         Processing… {elapsed}s
+                      </>
+                    ) : detail.availability.state !== 'available' ? (
+                      <>
+                        <Lock className="h-4 w-4" aria-hidden />
+                        Local data {detail.availability.state} — see instructions above
                       </>
                     ) : (
                       <>

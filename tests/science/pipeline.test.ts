@@ -2,9 +2,15 @@ import { describe, expect, test } from 'bun:test';
 import { latLonToUtm, utmToLatLon, epsgToLatLon, utmZone, epsgForLatLon } from '@/lib/science/utm';
 import { validateDataset } from '@/lib/science/validation';
 import { runPipeline } from '@/lib/science/pipeline';
-import { getDataset } from '@/lib/data/datasets';
+import { getDataset, getDatasetAvailability } from '@/lib/data/datasets';
 import { syntheticStrikeSlipFixture, syntheticNullFixture, mulberry32 } from '@/lib/science/fixtures';
 import type { ScienceDataset } from '@/lib/science/types';
+
+// Real-data tests are opt-in by availability: they run when the local derived
+// products are present (they are committed to this repository) and skip with
+// an explicit message when the scientific data has not been obtained — the
+// default offline workflow never depends on them.
+const LA_AVAILABLE = getDatasetAvailability('real-nisar-la-2008').state === 'available';
 
 describe('UTM conversion (Snyder 1987)', () => {
   test('zone determination', () => {
@@ -110,10 +116,12 @@ describe('pipeline integration', () => {
     expect(Math.abs(res.validation!.biasM)).toBeLessThan(0.01);
     // Transport grid is well-formed.
     expect(res.transport.width).toBeGreaterThan(100);
-    expect(res.transport.disposition ?? res.transport.displacement.length).toBeGreaterThan(1000);
+    expect(res.transport.displacement.length).toBeGreaterThan(1000);
   });
 
-  test('real NISAR LA sample runs and reports honestly', () => {
+  // Data-dependent: skips with an explicit message when the derived LA
+  // product is absent (fresh clone without data).
+  test.skipIf(!LA_AVAILABLE)('real NISAR LA sample runs and reports honestly [requires local data]', () => {
     const ds = getDataset('real-nisar-la-2008')!;
     expect(ds).toBeDefined();
     const res = runPipeline(ds, {}, []);
@@ -124,7 +132,7 @@ describe('pipeline integration', () => {
     expect(res.narrative.reliability).toContain('ionospheric');
   });
 
-  test('coherence threshold rejection surfaces a clear error', () => {
+  test.skipIf(!LA_AVAILABLE)('coherence threshold rejection surfaces a clear error [requires local data]', () => {
     const ds = getDataset('real-nisar-la-2008')!;
     expect(() => runPipeline(ds, { coherenceThreshold: 0.97 }, [])).toThrow(/coherence threshold/);
   });

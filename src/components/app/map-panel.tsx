@@ -196,20 +196,23 @@ export default function MapPanel(props: MapPanelProps) {
   }, [grids, gridsMeta, layer]);
 
   const footprint: [number, number][] = useMemo(
-    () => dataset.footprintPolygon.map(([lon, lat]) => [lat, lon] as [number, number]),
+    () => (dataset.footprintPolygon ?? []).map(([lon, lat]) => [lat, lon] as [number, number]),
     [dataset.footprintPolygon],
   );
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-[#E7E2DA] bg-white" style={{ minHeight: 420 }}>
+    <div
+      className="relative overflow-hidden rounded-xl border border-[#E7E2DA] bg-white"
+      style={{ minHeight: 420 }}
+      role="region"
+      aria-label="Study area map"
+    >
       <MapContainer
         center={[dataset.center?.lat ?? 0, dataset.center?.lon ?? 0]}
-        zoom={8}
+        zoom={dataset.center ? 8 : 2}
         style={{ height: '100%', minHeight: 420, position: 'absolute', inset: 0 }}
         zoomControl={false}
         attributionControl={true}
-        role="region"
-        aria-label="Study area map"
       >
         <ZoomControls />
         <TileLayer
@@ -225,7 +228,10 @@ export default function MapPanel(props: MapPanelProps) {
             opacity={opacity}
           />
         )}
-        <Polygon positions={footprint} pathOptions={{ color: '#1C1A17', weight: 1.5, fillColor: '#1C1A17', fillOpacity: 0.05 }} />
+          <Polygon
+            positions={footprint.length > 2 ? footprint : []}
+            pathOptions={{ color: '#1C1A17', weight: 1.5, fillColor: '#1C1A17', fillOpacity: 0.05 }}
+          />
         {granulePolys?.map(({ granule, poly }) => (
           <Polygon
             key={granule.granuleId}
@@ -264,6 +270,14 @@ export default function MapPanel(props: MapPanelProps) {
         })}
         <HoverReadout grids={grids ?? null} gridsMeta={gridsMeta} layer={layer} />
       </MapContainer>
+      {dataset.availability.state !== 'available' && (
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 z-[500] -translate-y-1/2 px-6 text-center">
+          <p className="mx-auto max-w-md rounded-lg border border-[#E5C4B7] bg-[#FBF3EF]/95 px-4 py-3 text-[12px] leading-4 text-[#9E3B2C]">
+            The local scientific data for this dataset has not been obtained, so there is nothing to
+            display on the map yet. The instructions in the panel on the right explain how to obtain it.
+          </p>
+        </div>
+      )}
       {overlay && <Legend layer={layer} scaleMaxM={overlay.scaleMaxM} />}
       {rendering && (
         <div className="absolute right-3 top-3 z-[500] rounded-md border bg-white/95 px-2.5 py-1 text-[11px] text-[#6F6862] shadow-sm">

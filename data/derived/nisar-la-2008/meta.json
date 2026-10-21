@@ -2,6 +2,11 @@
   "slug": "nisar-la-2008",
   "title": "Los Angeles region \u2014 NISAR-format L-band interferogram (2008)",
   "blurb": "Real ALOS PALSAR L-band radar pair over the San Gabriel Mountains and Antelope Valley, processed into a NISAR L2 GUNW product by the NISAR SDS. Full quantitative analysis available.",
+  "extractor": {
+    "tool": "tools/extract_gunw.py",
+    "policy": "lossless extraction of product layers; no scientific processing",
+    "validatedAgainst": "ASF NISAR GUNW guide (nisar-docs.asf.alaska.edu/gunw/, retrieved 2026-10-21); NISAR L2 GUNW product spec 1.x layouts"
+  },
   "grid": {
     "width": 1136,
     "height": 1555,
@@ -13,14 +18,19 @@
   },
   "radar": {
     "wavelength": 0.2360571,
+    "centerFrequencyHz": 1269999750.0604727,
+    "polarization": "HH",
+    "frequency": "A",
     "incidenceAngleDeg": 24.172264099121094,
-    "headingDeg": 8.98123971190155,
+    "headingDeg": -11.802980770679426,
     "passDirection": "ascending",
     "lookDirection": "right",
     "losUnitVectorProductX": -0.40051889419555664,
     "losUnitVectorProductY": -0.08369450271129608,
     "numberOfLooks": 119,
-    "ionoScreenSigmaRad": 4.312840461730957
+    "ionoScreenVariationMadRad": 0.3671887218952179,
+    "ionoScreenVariationStdRad": 0.6007047891616821,
+    "ionoScreenUncertaintyMedianRad": 4.313375473022461
   },
   "identification": {
     "missionId": "ALOS",
@@ -213,6 +223,8 @@
     "azimuthIonosphericCorrectionApplied": "True",
     "hydrostaticTroposphericCorrectionApplied": "True",
     "wetTroposphericCorrectionApplied": "True",
+    "phaseIonosphericCorrectionAppliedToLayer": "False (screen supplied, not applied \u2014 ASF GUNW guide)",
+    "phaseTroposphericCorrectionAppliedToLayer": "False (LUTs supplied, not removed \u2014 ASF GUNW guide)",
     "demSource": "Digital Elevation Model (DEM) for the NASA-ISRO NISAR mission version 1.1 (v1.1) based on the Copernicus DEM 30-m and Copernicus 90-m referenced to the WGS84 ellipsoid",
     "l1ReferenceSlcGranules": [
       "NISAR_L1_PR_RSLC_001_030_A_019_2800_SHNA_A_20081012T060911_20081012T060925_D00404_N_F_J_001.h5"

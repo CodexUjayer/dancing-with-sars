@@ -11,6 +11,14 @@ import type {
   UsgsEventLite,
 } from '@/lib/science/types';
 
+/** Structured availability of a dataset's local scientific data. */
+export interface DatasetAvailability {
+  state: 'available' | 'missing' | 'incomplete' | 'invalid';
+  missingFiles: string[];
+  invalidFiles: Array<{ file: string; reason: string }>;
+  explanation: string;
+}
+
 export interface DatasetListEntry {
   id: string;
   slug: string;
@@ -24,6 +32,8 @@ export interface DatasetListEntry {
   secondaryTime: string;
   temporalBaselineDays: number;
   center?: { lat: number; lon: number };
+  /** Availability of the local scientific data (never fabricated). */
+  availability: DatasetAvailability;
   /** Scene-adapted starting parameters suggested by the dataset registry. */
   suggestedParams?: {
     coherenceThreshold?: number;
@@ -53,11 +63,13 @@ export interface DatasetDetail {
   mode: 'quantitative' | 'evidence';
   isSynthetic: boolean;
   provenance: ProvenanceRecord;
-  geometry: RadarGeometry;
-  footprintPolygon: [number, number][];
+  geometry?: RadarGeometry;
+  footprintPolygon?: [number, number][];
   center?: { lat: number; lon: number };
   grid?: { width: number; height: number; epsg: number };
-  numberOfLooks: number;
+  numberOfLooks?: number;
+  /** Availability of the local scientific data (never fabricated). */
+  availability: DatasetAvailability;
 }
 
 export interface EvidenceAnalysisResult {
@@ -71,9 +83,10 @@ export interface EvidenceAnalysisResult {
   narrative: { whatChanged: string; howMuch: string; reliability: string };
   warnings: string[];
   processingMs: number;
+  runId?: string;
 }
 
-export type AnalysisPayload = AnalysisResult | EvidenceAnalysisResult;
+export type AnalysisPayload = (AnalysisResult & { runId?: string }) | EvidenceAnalysisResult;
 
 export function isEvidenceResult(r: AnalysisPayload): r is EvidenceAnalysisResult {
   return (r as EvidenceAnalysisResult).kind === 'evidence';

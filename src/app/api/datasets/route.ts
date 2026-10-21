@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
-import { listDatasets, getDataset } from '@/lib/data/datasets';
+import { listDatasets } from '@/lib/data/datasets';
 
 /**
- * GET /api/datasets — registry of analysis-ready datasets.
+ * GET /api/datasets — registry of configured datasets.
+ * Never fails because of absent local data: each entry carries a structured
+ * availability state ('available' | 'missing' | 'incomplete' | 'invalid')
+ * with the missing-file list and an explanation.
  */
 export async function GET() {
   try {

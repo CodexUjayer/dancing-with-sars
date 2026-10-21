@@ -246,11 +246,25 @@ export function runPipeline(
   }
 
   // ---- Stage D: uncertainty ---------------------------------------------------
-  // NOTE: the ionospheric screen uncertainty is deliberately NOT part of the
-  // per-pixel sigma: it is a spatially correlated systematic (the error of
-  // the already-applied correction), so treating it as independent
-  // per-pixel noise would be statistically wrong. It enters through the
-  // detection floor below, matching the documented design.
+  // Per-pixel sigma = quadrature of the coherence-based phase noise
+  // (Rodriguez & Martin 1992) and the reference-region scatter. NOTE: this
+  // treats the reference scatter as an independent per-pixel contribution —
+  // conservative for random noise, but it does NOT represent spatially
+  // correlated systematics, which are handled by the floor below and
+  // documented as unresolved rather than averaged away.
+  //
+  // IONOSPHERIC SYSTEMATIC FLOOR — semantics corrected 2026-10-21 against the
+  // official ASF NISAR GUNW guide: the ionospheric phase screen is supplied
+  // by the producer but NOT applied to the stored unwrappedPhase, and
+  // tropospheric corrections are supplied as LUTs and not removed either.
+  // Therefore the measured field is APPARENT relative LOS range change, and
+  // the unresolved ionospheric contamination is bounded by the LARGER of:
+  //   (a) the unapplied screen's own spatial variation (the ionospheric
+  //       signal actually present in the measurement after referencing), and
+  //   (b) the screen estimate's uncertainty (how poorly the true ionosphere
+  //       is known, even if a user applied the screen).
+  // A correction-uncertainty value alone would NOT remove the spatially
+  // varying contribution — which is exactly why both statistics are needed.
   const sigma = new Float32Array(n);
   for (let idx = 0; idx < n; idx++) {
     if (!mask[idx]) {
@@ -265,14 +279,15 @@ export function runPipeline(
     );
   }
 
-  // ---- Detection summary -------------------------------------------------------
-  // The ionospheric screen uncertainty is a SPATIALLY CORRELATED systematic
-  // (the error of the already-applied correction), so it is NOT added to the
-  // per-pixel sigma; instead it raises the physical detection floor: change
-  // is only declared significant above the product's own systematic budget.
-  const ionoFloorM = ds.ionoScreenSigmaRad
-    ? (ds.geometry.wavelength * ds.ionoScreenSigmaRad) / (4 * Math.PI)
+  const losPerRad = ds.geometry.wavelength / (4 * Math.PI);
+  const screenVariationRad = ds.ionoScreen
+    ? Math.max(ds.ionoScreen.variationMadRad, ds.ionoScreen.variationStdRad)
     : 0;
+  const screenUncertaintyRad = ds.ionoScreen?.uncertaintyMedianRad ?? 0;
+  const floorRad = Math.max(screenVariationRad, screenUncertaintyRad);
+  const ionoFloorM = floorRad > 0 ? losPerRad * floorRad : 0;
+  const ionoFloorBasis: ChangeSummary['ionoFloorBasis'] =
+    ionoFloorM <= 0 ? 'none' : screenVariationRad >= screenUncertaintyRad ? 'variation' : 'uncertainty';
   const effectiveFloorM = Math.max(params.detectionFloor, ionoFloorM);
   const det = runDetection(
     {

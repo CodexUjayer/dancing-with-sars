@@ -217,3 +217,21 @@ Work Log:
 Stage Summary:
 - The application now analyses a REAL OPERATIONAL NISAR mission product end-to-end (the previous real quantitative dataset was a 2008 ALOS sample). The flagship honest result: a severely ionosphere-degraded 12-day pair over the Mojave yields NO deformation claim - 2% valid coverage, 48 mm max motion vs a 72 mm systematic floor - while a real in-frame M4.06 earthquake is correctly reported as insufficient evidence rather than a cause.
 - The real data immediately exposed and led to fixes of one false-positive detection mechanism (phase filler over cc=0 areas), one silent statistical degeneracy (MAD=0), one narrative overclaim path (stray pixels), one live-query regression (USGS bbox), one scaling hazard (19M-element spreads), and one browser rendering defect (57x aspect squash) - each now documented and regression-checked.
+
+---
+Task ID: R1 (remediation baseline)
+Agent: lead-architect
+Task: Phase A of the full scientific/engineering remediation — inspect repository, run existing checks, record baseline
+
+Work Log:
+- Read every audited file: science core (phase, pipeline, attribution, okada, detection, uncertainty, validation, statistics, los-projection, utm, fixtures, types), data layer (datasets, usgs, cmr, references), all API routes, tools/extract_gunw.py, next.config.ts, package.json, prisma/schema.prisma, .gitignore, docs/science.md, docs/validation.md, page.tsx.
+- Ran `bun test`: 42 pass / 0 fail / 234 assertions (exit 0).
+- Ran `bun run lint`: 0 errors (exit 0).
+- Ran `npx tsc --noEmit`: 11 errors — 4 in app source (analyses route granuleId typing, map-panel role prop, results-panel runId, pipeline.test disposition), 3 `bun:test` module errors in tests, 4 in sandbox vendor dirs (skills/, examples/) that tsconfig includes.
+- Ran listDatasets() directly: **CRASH — ENOENT data/derived/nisar-mojave-2026/meta.json**. The Mojave dataset (added with the 2.58 GB granule last session) was never persisted (data/ gitignored, raw granule gone). /api/datasets currently returns 500; the app is broken in exactly the clean-clone failure mode the audit describes.
+- Data inventory present now: derived/nisar-la-2008 (4 files, git-tracked), derived/panama-2026 (granules.json + usgs_event.json, git-tracked), nisar-browse (3 PNGs, git-tracked), nisar-sample (ALOS 2008 H5 264 MB + PDFs, git-tracked). Mojave derived dir ABSENT.
+- Confirmed audit findings against code: (1) listDatasets uses getDataset(id)! and crashes on missing files; (2) forwardModelCheck + buildPredictionOnGrid anchor model offsets to the RASTER CENTER, not the event epicenter (misplaces model whenever epicenter != grid centre; synthetic fixtures pass only because their faults sit at the grid centre); (3) pipeline passes usgsEvents[0] with no ranking (FDSN default order is time-ascending, so [0] is the EARLIEST event, not the largest/most relevant); (4) attribution thresholds (30 mm atmospheric, amplitude ratio 0.3–3, r>0.25) are hardcoded, only partially documented in methodNote; (5) H5 'null supported' + H4 single-component 'not-supported' overclaim; (6) detection.ts has no masked-pixel count, no cluster statistics, no null-scene FP calibration; (7) Panama narrative claims deformation "very likely captured" — overclaim vs the mandated conservative language; granules[0] selected without criteria; (8) next.config.ts ignores TS build errors; (9) db:push uses --accept-data-loss; (10) .env* gitignore pattern would exclude .env.example (which does not exist); (11) extractor does no structural validation and never closes the HDF5 file; (12) LA meta.json correction flags read "True" for tropo/iono — docs must state residuals remain (the 81 mm iono floor IS that residual).
+- Baseline accepted; findings checklist created in the task plan. Not fabricated: every number above was observed by executed commands.
+
+Stage Summary:
+- Baseline recorded. App currently broken (/api/datasets 500) due to unguarded dataset loading — confirms the audit's critical finding in the live environment. Proceeding to remediation in the mandated order: clean-clone handling first.

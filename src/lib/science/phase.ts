@@ -19,18 +19,46 @@
  *
  * where dr_d is the surface displacement in the line-of-sight direction and
  * the remaining terms are geometric, tropospheric, ionospheric and noise range
- * differences. Because the GUNW product is already flattened (geometric term
- * removed) and corrected for troposphere and ionosphere (per product metadata),
- * the displacement contribution is recovered as
+ * differences.
+ *
+ * CORRECTION STATUS OF THE CONSUMED LAYER (verified against the official ASF
+ * NISAR GUNW product guide, https://nisar-docs.asf.alaska.edu/gunw/,
+ * retrieved 2026-10-21, and confirmed against the sample product's own run
+ * configuration):
+ *
+ *   - The geometric (flattening) term IS removed: the product records
+ *     topographicFlatteningApplied / ellipsoidalFlatteningApplied = True.
+ *   - The ionospheric phase screen is INCLUDED in the product but NOT
+ *     APPLIED to the data layers ("The estimated ionospheric phase screen is
+ *     included in the product but not applied to the data layers within the
+ *     GUNW product by default" — ASF guide).
+ *   - Tropospheric and solid-Earth-tide corrections are supplied as geocoded
+ *     lookup tables and are NOT removed from the interferometric data
+ *     ("These phase corrections, when available, are not removed from the
+ *     interferometric data" — ASF guide).
+ *   - The metadata flags parameters/geocoding/*CorrectionApplied record
+ *     corrections applied during the GEOCODING (geolocation) step, not phase
+ *     corrections applied to the interferogram.
+ *
+ * CONSEQUENCE (this is the honest reading): applying
  *
  *      d_LOS = lambda * phi / (4 pi)
  *
- * with POSITIVE d_LOS meaning an INCREASE in radar range, i.e. ground motion
- * AWAY from the satellite; negative d_LOS = motion TOWARD the satellite.
+ * to the stored unwrappedPhase yields the APPARENT RELATIVE range change
+ * along the line of sight — the sum of true ground displacement and the
+ * UNCORRECTED tropospheric and ionospheric contributions (plus noise). It
+ * is verified ground displacement only up to those residuals. MOTUS
+ * therefore labels its output "apparent relative LOS range change",
+ * quantifies the unresolved ionospheric systematic from the product's own
+ * screen statistics (variation of the unapplied screen, and the screen
+ * estimate's uncertainty — whichever is larger; see pipeline.ts Stage D),
+ * and never describes single-pair results as verified tectonic displacement.
  *
- * Note that the frequently quoted alternative d = -lambda*dphi/(4*pi) refers to
- * the opposite conjugation order; the sign is fully determined by which scene
- * is conjugated when forming the interferogram, and we follow the NISAR SDS
+ * SIGN: POSITIVE d_LOS means an INCREASE in radar range, i.e. ground motion
+ * AWAY from the satellite; negative d_LOS = motion TOWARD the satellite.
+ * The frequently quoted alternative d = -lambda*dphi/(4*pi) refers to the
+ * opposite conjugation order; the sign is fully determined by which scene is
+ * conjugated when forming the interferogram, and we follow the NISAR SDS
  * convention above.
  */
 

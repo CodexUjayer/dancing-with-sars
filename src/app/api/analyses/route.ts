@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getDataset, getEvidenceExtras } from '@/lib/data/datasets';
+import {
+  getDataset,
+  getEvidenceExtras,
+  getDatasetAvailability,
+  listDatasets,
+} from '@/lib/data/datasets';
 import { runPipeline } from '@/lib/science/pipeline';
 import { DEFAULT_PARAMS } from '@/lib/science/types';
 import type { AnalysisResult, TransportGrid, UsgsEventLite } from '@/lib/science/types';
@@ -100,7 +105,23 @@ export async function POST(req: Request) {
 
   const ds = getDataset(datasetId);
   if (!ds) {
-    return NextResponse.json({ ok: false, error: `Unknown dataset: ${datasetId}` }, { status: 404 });
+    // Distinguish "unknown dataset" (404) from "known dataset whose local
+    // scientific data has not been obtained" (409 with a structured reason).
+    const availability = getDatasetAvailability(datasetId);
+    const known = listDatasets().some((d) => d.id === datasetId);
+    if (!known) {
+      return NextResponse.json({ ok: false, error: `Unknown dataset: ${datasetId}` }, { status: 404 });
+    }
+    return NextResponse.json(
+      {
+        ok: false,
+        code: 'dataset-unavailable',
+        error:
+          `The local scientific data for this dataset is ${availability.state}: ${availability.explanation}`,
+        availability,
+      },
+      { status: 409 },
+    );
   }
 
   // Parameter precedence: request body > dataset-suggested defaults > global defaults.
@@ -148,9 +169,20 @@ export async function POST(req: Request) {
     // ---- Evidence mode (Panama) ------------------------------------------
     const extras = getEvidenceExtras(datasetId);
     const event = (extras.event as unknown as UsgsEventLite | undefined) ?? undefined;
-    const granules = ((extras.granules as Array<Record<string, unknown>>) ?? []).map((g) => ({
+    interface EvidenceGranule {
+      granuleId: string;
+      timeStart: string;
+      timeEnd: string;
+      polygon: string;
+      sizeMB: number;
+      dataUrl?: string;
+      browseUrl?: string;
+      conceptId: string;
+      [k: string]: unknown;
+    }
+    const granules = ((extras.granules as Array<EvidenceGranule>) ?? []).map((g) => ({
       ...g,
-      localBrowseUrl: `/api/external/browse?granule=${encodeURIComponent(String(g.granuleId))}`,
+      localBrowseUrl: `/api/external/browse?granule=${encodeURIComponent(g.granuleId)}`,
     }));
 
     // Live USGS context query around the event (sequence + verification).
@@ -215,16 +247,16 @@ export async function POST(req: Request) {
       narrative: {
         whatChanged:
           `On ${event ? event.time.slice(0, 16).replace('T', ' ') : 'unknown'} UTC a magnitude ${event?.magnitude ?? '?'} earthquake struck ${event?.place ?? 'the region'}. ` +
-          `${granules.length} NISAR interferometric pairs catalogued in NASA CMR have acquisitions before and after this event ` +
-          `(e.g. ${granules[0] ? String(granules[0].granuleId).slice(0, 40) + '…' : 'n/a'}), so the deformation is very likely captured in those products.`,
+          `${granules.length} NISAR GUNW pairs catalogued in NASA CMR have acquisition intervals that span the event ` +
+          `(e.g. ${granules[0] ? String(granules[0].granuleId).slice(0, 40) + '…' : 'n/a'}). Whether these products ` +
+          `contain a measurable earthquake-related deformation signal has not yet been established: confirming it ` +
+          `requires downloading and processing the full science products.`,
         howMuch:
           `The measured deformation cannot be quantified in this deployment: downloading the full NISAR HDF5 products ` +
           `requires NASA Earthdata credentials which are not configured here. The identical measurement pipeline is ` +
           `demonstrated on the open NISAR sample product and on synthetic fixtures with analytic ground truth. ` +
           (prediction
-            ? `The forward model below predicts peak LOS motion on the order of ${(Math.max(
-                ...decodeMax(prediction),
-              ) * 100).toFixed(0)} cm from the published USGS mechanism — this is a prediction, not a measurement.`
+            ? `The forward model below predicts peak LOS motion on the order of ${(decodePeak(prediction) * 100).toFixed(0)} cm from the published USGS mechanism — this is a model prediction, not a measurement.`
             : ''),
         reliability:
           `Granule metadata and availability are real and live-verified against NASA CMR. Browse imagery is the official ` +
@@ -270,7 +302,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 /** Helper: decode the prediction grid to find its peak magnitude. */
-function decodeMax(tg: TransportGrid): number[] {
+function decodePeak(tg: TransportGrid): number {
   const buf = Buffer.from(tg.displacement, 'base64');
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   let mx = 0;
@@ -278,5 +310,5 @@ function decodeMax(tg: TransportGrid): number[] {
     const v = view.getFloat32(i, true);
     if (Number.isFinite(v) && Math.abs(v) > Math.abs(mx)) mx = v;
   }
-  return [Math.abs(mx) || 0.001];
+  return Math.abs(mx) || 0.001;
 }

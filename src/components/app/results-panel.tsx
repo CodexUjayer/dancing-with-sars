@@ -9,7 +9,7 @@ import { ChevronRight, AlertTriangle, CheckCircle2, ExternalLink } from 'lucide-
 import type { AnalysisResult, UsgsEventLite } from '@/lib/science/types';
 import { HypothesisStatusBadge, MicroLabel, Stat, fmtMm, fmtKm2, fmtDateTime } from './ui-bits';
 
-export function QuantitativeResults({ result }: { result: AnalysisResult }) {
+export function QuantitativeResults({ result }: { result: AnalysisResult & { runId?: string } }) {
   const s = result.summary;
   const v = result.validation;
   const fm = result.attribution.forwardModelCheck;

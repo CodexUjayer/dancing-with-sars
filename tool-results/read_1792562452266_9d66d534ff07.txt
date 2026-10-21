@@ -1,0 +1,627 @@
+     1→'use client';
+     2→
+     3→/**
+     4→ * MOTUS — Earth-change intelligence (NASA Space Apps 2026, "Dancing with the SARs").
+     5→ *
+     6→ * Single-page application: dataset selection -> map workspace -> analysis
+     7→ * results with honest uncertainty and traceable evidence.
+     8→ */
+     9→
+    10→import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+    11→import dynamic from 'next/dynamic';
+    12→import { Loader2, Play, RotateCcw, ChevronDown, ChevronRight, Lock, BookOpen } from 'lucide-react';
+    13→import { Button } from '@/components/ui/button';
+    14→import { Slider } from '@/components/ui/slider';
+    15→import { Switch } from '@/components/ui/switch';
+    16→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+    17→import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+    18→import { Skeleton } from '@/components/ui/skeleton';
+    19→import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+    20→import { MethodologyDrawer } from '@/components/app/methodology';
+    21→import { QuantitativeResults } from '@/components/app/results-panel';
+    22→import { EvidenceViewer } from '@/components/app/evidence-viewer';
+    23→import {
+    24→  DataClassBadge,
+    25→  MicroLabel,
+    26→  fmtDate,
+    27→  fmtDateTime,
+    28→} from '@/components/app/ui-bits';
+    29→import type {
+    30→  AnalysisPayload,
+    31→  DatasetDetail,
+    32→  DatasetListEntry,
+    33→  HealthPayload,
+    34→  PanamaGranule,
+    35→} from '@/components/app/types';
+    36→import type { LayerKind } from '@/components/app/raster-render';
+    37→import { decodeTransport, type DecodedGrids } from '@/components/app/decode';
+    38→import { isEvidenceResult } from '@/components/app/types';
+    39→
+    40→const MapPanel = dynamic(() => import('@/components/app/map-panel'), {
+    41→  ssr: false,
+    42→  loading: () => (
+    43→    <div className="flex min-h-[420px] items-center justify-center rounded-xl border border-[#E7E2DA] bg-white">
+    44→      <Skeleton className="h-full w-full rounded-xl" />
+    45→    </div>
+    46→  ),
+    47→});
+    48→
+    49→interface AdvancedParams {
+    50→  coherenceThreshold: number;
+    51→  detectionFloor: number;
+    52→  significanceK: number;
+    53→  referenceStrategy: 'farField' | 'fullFrameMedian';
+    54→  detrend: boolean;
+    55→}
+    56→
+    57→const DEFAULT_ADVANCED: AdvancedParams = {
+    58→  coherenceThreshold: 0.5,
+    59→  detectionFloor: 0.01,
+    60→  significanceK: 3,
+    61→  referenceStrategy: 'farField',
+    62→  detrend: false,
+    63→};
+    64→
+    65→export default function Home() {
+    66→  const [datasets, setDatasets] = useState<DatasetListEntry[] | null>(null);
+    67→  const [health, setHealth] = useState<HealthPayload | null>(null);
+    68→  const [selectedId, setSelectedId] = useState<string | null>(null);
+    69→  const [detail, setDetail] = useState<DatasetDetail | null>(null);
+    70→  const [detailEvent, setDetailEvent] = useState<unknown>(null);
+    71→  const [detailGranules, setDetailGranules] = useState<PanamaGranule[]>([]);
+    72→  const [running, setRunning] = useState(false);
+    73→  const [elapsed, setElapsed] = useState(0);
+    74→  const [result, setResult] = useState<AnalysisPayload | null>(null);
+    75→  const [error, setError] = useState<string | null>(null);
+    76→  const [advanced, setAdvanced] = useState<AdvancedParams>(DEFAULT_ADVANCED);
+    77→  const [layer, setLayer] = useState<LayerKind>('displacement');
+    78→  const [opacity, setOpacity] = useState(0.85);
+    79→  const [grids, setGrids] = useState<DecodedGrids | null>(null);
+    80→  const [gridsMeta, setGridsMeta] = useState<Parameters<typeof import('@/components/app/raster-render').renderOverlay>[1] | undefined>(undefined);
+    81→  const [granulePolys, setGranulePolys] = useState<Array<{ granule: PanamaGranule; poly: [number, number][] }>>([]);
+    82→  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    83→
+    84→  useEffect(() => {
+    85→    fetch('/api')
+    86→      .then((r) => r.json())
+    87→      .then((d: HealthPayload) => setHealth(d))
+    88→      .catch(() => setHealth(null));
+    89→    fetch('/api/datasets')
+    90→      .then((r) => r.json())
+    91→      .then((d: { ok: boolean; datasets: DatasetListEntry[] }) => {
+    92→        if (d.ok) {
+    93→          setDatasets(d.datasets);
+    94→          setSelectedId(d.datasets[0]?.id ?? null);
+    95→        }
+    96→      })
+    97→      .catch(() => setDatasets([]));
+    98→  }, []);
+    99→
+   100→  // Load dataset detail on selection; adopt the dataset's suggested starting
+   101→  // parameters (e.g. a decorrelated ionosphere-dominated pair suggests a lower
+   102→  // coherence threshold — every value stays user-adjustable under Advanced).
+   103→  useEffect(() => {
+   104→    if (!selectedId) return;
+   105→    setResult(null);
+   106→    setError(null);
+   107→    setGrids(null);
+   108→    setGridsMeta(undefined);
+   109→    setGranulePolys([]);
+   110→    setDetail(null);
+   111→    setLayer('displacement');
+   112→    const suggestedCoh = datasets?.find((d) => d.id === selectedId)?.suggestedParams?.coherenceThreshold;
+   113→    setAdvanced((a) => ({
+   114→      ...a,
+   115→      coherenceThreshold: suggestedCoh ?? DEFAULT_ADVANCED.coherenceThreshold,
+   116→    }));
+   117→    fetch(`/api/datasets/${selectedId}`)
+   118→      .then((r) => r.json())
+   119→      .then((d: { ok: boolean; dataset?: DatasetDetail; event?: unknown; granules?: PanamaGranule[] }) => {
+   120→        if (d.ok && d.dataset) {
+   121→          setDetail(d.dataset);
+   122→          setDetailEvent(d.event ?? null);
+   123→          setDetailGranules(d.granules ?? []);
+   124→        }
+   125→      })
+   126→      .catch((e) => setError((e as Error).message));
+   127→  }, [selectedId, datasets]);
+   128→
+   129→  const runAnalysis = useCallback(async () => {
+   130→    if (!selectedId || running) return;
+   131→    setRunning(true);
+   132→    setError(null);
+   133→    setResult(null);
+   134→    setElapsed(0);
+   135→    timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+   136→    try {
+   137→      const res = await fetch('/api/analyses', {
+   138→        method: 'POST',
+   139→        headers: { 'Content-Type': 'application/json' },
+   140→        body: JSON.stringify({
+   141→          datasetId: selectedId,
+   142→          params: {
+   143→            coherenceThreshold: advanced.coherenceThreshold,
+   144→            detectionFloor: advanced.detectionFloor,
+   145→            significanceK: advanced.significanceK,
+   146→            referenceStrategy: advanced.referenceStrategy,
+   147→            detrend: advanced.detrend,
+   148→          },
+   149→        }),
+   150→      });
+   151→      const data = (await res.json()) as { ok: boolean; result?: AnalysisPayload; error?: string };
+   152→      if (!data.ok || !data.result) {
+   153→        setError(data.error ?? 'The analysis failed for an unknown reason.');
+   154→      } else {
+   155→        const r = data.result;
+   156→        setResult(r);
+   157→        if (isEvidenceResult(r)) {
+   158→          setGrids(r.prediction ? decodeTransport(r.prediction) : null);
+   159→          setGridsMeta(r.prediction?.meta);
+   160→          setLayer('displacement');
+   161→        } else {
+   162→          setGrids(decodeTransport(r.transport));
+   163→          setGridsMeta(r.transport.meta);
+   164→          setLayer('displacement');
+   165→        }
+   166→      }
+   167→    } catch (e) {
+   168→      setError((e as Error).message);
+   169→    } finally {
+   170→      if (timerRef.current) clearInterval(timerRef.current);
+   171→      setRunning(false);
+   172→    }
+   173→  }, [selectedId, running, advanced]);
+   174→
+   175→  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+   176→
+   177→  const eventsForMap = useMemo(() => {
+   178→    const fromResult = (() => {
+   179→      if (!result) return [];
+   180→      if (isEvidenceResult(result)) {
+   181→        return result.event ? [result.event, ...result.liveEvents.filter((e) => e.id !== result.event?.id)] : result.liveEvents;
+   182→      }
+   183→      return result.attribution.events;
+   184→    })();
+   185→    // For evidence datasets the primary event is known before any analysis
+   186→    // runs (it is part of the dataset record) — show it on selection.
+   187→    if (detail?.mode === 'evidence' && detailEvent && !fromResult.some((e) => e.id === (detailEvent as { id: string }).id)) {
+   188→      return [detailEvent as never, ...fromResult];
+   189→    }
+   190→    return fromResult;
+   191→  }, [result, detail, detailEvent]);
+   192→
+   193→  const primaryEvent = useMemo(() => {
+   194→    if (result && isEvidenceResult(result)) return result.event;
+   195→    return detailEvent as { id: string } | null ?? null;
+   196→  }, [result, detailEvent]);
+   197→
+   198→  const selectedEntry = datasets?.find((d) => d.id === selectedId) ?? null;
+   199→
+   200→  return (
+   201→    <div className="flex min-h-screen flex-col bg-[#FAF9F6]">
+   202→      <header className="sticky top-0 z-40 border-b border-[#E7E2DA] bg-white/95 backdrop-blur-sm">
+   203→        <div className="mx-auto flex h-14 max-w-[1240px] items-center justify-between gap-4 px-4 sm:px-6">
+   204→          <div className="flex items-baseline gap-3">
+   205→            <span className="text-[17px] font-semibold tracking-[0.02em] text-[#1C1A17]">MOTUS</span>
+   206→            <span className="hidden text-[11px] text-[#8A837B] sm:inline">
+   207→              Earth-change intelligence · NASA Space Apps 2026
+   208→            </span>
+   209→          </div>
+   210→          <div className="flex items-center gap-1.5">
+   211→            <StatusPill ok={health?.capabilities.liveCmr} label="CMR" />
+   212→            <StatusPill ok={health?.capabilities.liveUsgs} label="USGS" />
+   213→            <StatusPill ok={(datasets?.length ?? 0) > 0} label={`${datasets?.length ?? 0} datasets`} />
+   214→            <MethodologyDrawer
+   215→              trigger={
+   216→                <Button variant="outline" size="sm" className="ml-1 hidden h-7 gap-1.5 rounded-full border-[#D8D2C6] px-3 text-[11px] font-normal text-[#4A443C] hover:bg-[#F7F4EE] sm:inline-flex">
+   217→                  <BookOpen className="h-3.5 w-3.5" aria-hidden />
+   218→                  How it works
+   219→                </Button>
+   220→              }
+   221→            />
+   222→          </div>
+   223→        </div>
+   224→      </header>
+   225→
+   226→      <main className="mx-auto w-full max-w-[1240px] flex-1 px-4 py-6 sm:px-6">
+   227→        <section aria-label="Introduction" className="mb-6 flex flex-wrap items-center justify-between gap-3">
+   228→          <p className="max-w-2xl text-[13px] leading-5 text-[#6F6862]">
+   229→            Measure how the Earth&apos;s surface moved between two radar acquisitions — with honest uncertainty,
+   230→            traceable evidence and clearly labelled explanations.
+   231→          </p>
+   232→          <div className="sm:hidden">
+   233→            <MethodologyDrawer
+   234→              trigger={
+   235→                <Button variant="outline" size="sm" className="h-7 gap-1.5 rounded-full border-[#D8D2C6] px-3 text-[11px] font-normal text-[#4A443C]">
+   236→                      <BookOpen className="h-3.5 w-3.5" aria-hidden /> How it works
+   237→                </Button>
+   238→              }
+   239→            />
+   240→          </div>
+   241→        </section>
+   242→
+   243→        <section aria-label="Dataset selection" className="mb-6">
+   244→          <div className="flex gap-2.5 overflow-x-auto pb-1 [scrollbar-width:thin]">
+   245→            {(datasets ?? Array.from({ length: 5 }, (_, i) => null)).map((d, i) =>
+   246→              d === null ? (
+   247→                <div key={i} className="h-[104px] w-64 shrink-0 animate-pulse rounded-xl border border-[#EFEAE2] bg-white" />
+   248→              ) : (
+   249→                <button
+   250→                  key={d.id}
+   251→                  type="button"
+   252→                  onClick={() => setSelectedId(d.id)}
+   253→                  aria-pressed={d.id === selectedId}
+   254→                  className={`h-fit w-64 shrink-0 rounded-xl border bg-white p-3.5 text-left transition-all duration-150 ${
+   255→                    d.id === selectedId
+   256→                      ? 'border-[1.5px] border-[#1C1A17]'
+   257→                      : 'border-[#E7E2DA] hover:border-[#B8AFA2]'
+   258→                  }`}
+   259→                >
+   260→                  <DataClassBadge dataClass={d.dataClass} mode={d.mode} />
+   261→                  <div className="mt-1.5 line-clamp-2 min-h-[2.4em] text-[12.5px] font-medium leading-[1.2em] text-[#1C1A17]">
+   262→                    {d.title}
+   263→                  </div>
+   264→                  <div className="mt-1 font-mono text-[10px] uppercase tracking-[0.04em] text-[#8A837B]">
+   265→                    {d.temporalBaselineDays}-day pair · {fmtDate(d.referenceTime)} → {fmtDate(d.secondaryTime)}
+   266→                  </div>
+   267→                </button>
+   268→              ),
+   269→            )}
+   270→          </div>
+   271→        </section>
+   272→
+   273→        <div className="grid gap-6 lg:grid-cols-[1.85fr_1fr]">
+   274→          <div>
+   275→            {detail ? (
+   276→              <MapPanel
+   277→                key={detail.id}
+   278→                dataset={detail}
+   279→                grids={grids}
+   280→                gridsMeta={gridsMeta}
+   281→                layer={layer}
+   282→                opacity={opacity}
+   283→                events={eventsForMap as never}
+   284→                primaryEvent={primaryEvent as never}
+   285→                granulePolys={granulePolys}
+   286→              />
+   287→            ) : (
+   288→              <div className="flex min-h-[420px] items-center justify-center rounded-xl border border-[#E7E2DA] bg-white">
+   289→                <Loader2 className="h-5 w-5 animate-spin text-[#B8AFA2]" aria-label="Loading" />
+   290→              </div>
+   291→            )}
+   292→            {grids && detail && (
+   293→              <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-[#E7E2DA] bg-white px-3.5 py-2.5">
+   294→                <div role="tablist" aria-label="Map layer" className="flex overflow-hidden rounded-md border border-[#E7E2DA]">
+   295→                  {(['displacement', 'coherence', 'sigma', 'coverage'] as LayerKind[]).map((l) => (
+   296→                    <button
+   297→                      key={l}
+   298→                      role="tab"
+   299→                      aria-selected={layer === l}
+   300→                      onClick={() => setLayer(l)}
+   301→                      className={`px-3 py-1.5 text-[11.5px] transition-colors ${
+   302→                        layer === l ? 'bg-[#1C1A17] text-white' : 'bg-white text-[#6F6862] hover:bg-[#F7F4EE]'
+   303→                      }`}
+   304→                    >
+   305→                      {l === 'displacement' ? (isEvidenceResult(result ?? {} as never) && (result as { kind?: string })?.kind === 'evidence' ? 'Model prediction' : 'Displacement') : l === 'coherence' ? 'Coherence' : l === 'sigma' ? 'Uncertainty' : 'Coverage'}
+   306→                    </button>
+   307→                  ))}
+   308→                </div>
+   309→                {layer === 'displacement' && (
+   310→                  <label className="flex items-center gap-2 text-[11px] text-[#8A837B]">
+   311→                    opacity
+   312→                    <Slider
+   313→                      value={[Math.round(opacity * 100)]}
+   314→                      min={40}
+   315→                      max={100}
+   316→                      step={5}
+   317→                      onValueChange={(v) => setOpacity(v[0] / 100)}
+   318→                      className="w-24"
+   319→                      aria-label="Layer opacity"
+   320→                    />
+   321→                    <span className="w-8 font-mono tabular-nums text-[#4A443C]">{Math.round(opacity * 100)}%</span>
+   322→                  </label>
+   323→                )}
+   324→                {(result && isEvidenceResult(result) && result.prediction) && (
+   325→                  <span className="text-[10.5px] uppercase tracking-[0.06em] text-[#8F4A2B]">model · not a measurement</span>
+   326→                )}
+   327→              </div>
+   328→            )}
+   329→          </div>
+   330→
+   331→          <div className="space-y-5">
+   332→            {detail ? (
+   333→              <>
+   334→                <section aria-label="Dataset details" className="rounded-xl border border-[#E7E2DA] bg-white p-5">
+   335→                  <div className="flex flex-wrap items-center gap-2">
+   336→                    <DataClassBadge dataClass={detail.provenance.dataClass} mode={detail.mode} />
+   337→                    {detail.isSynthetic && (
+   338→                      <span className="text-[10px] uppercase tracking-[0.06em] text-[#8F4A2B]">validation lab</span>
+   339→                    )}
+   340→                  </div>
+   341→                  <h1 className="mt-2 text-[15px] font-semibold leading-5 text-[#1C1A17]">{detail.title}</h1>
+   342→                  <p className="mt-1.5 text-[12.5px] leading-5 text-[#6F6862]">{detail.blurb}</p>
+   343→                  <div className="mt-3.5 grid grid-cols-2 gap-x-4 gap-y-3">
+   344→                    <Fact label="Sensor" value={detail.provenance.platform} />
+   345→                    <Fact label="Product" value={detail.provenance.productType} />
+   346→                    <Fact label="Reference scene" value={fmtDateTime(detail.provenance.referenceTime)} mono />
+   347→                    <Fact label="Secondary scene" value={fmtDateTime(detail.provenance.secondaryTime)} mono />
+   348→                    <Fact label="Wavelength" value={`${(detail.geometry.wavelength * 100).toFixed(1)} cm (L band)`} mono />
+   349→                    <Fact label="Incidence" value={`${detail.geometry.incidenceAngleDeg.toFixed(1)}°`} mono />
+   350→                    <Fact label="Pass / look" value={`${detail.geometry.passDirection} · ${detail.geometry.lookDirection}-looking`} />
+   351→                    <Fact label="Looks" value={String(detail.numberOfLooks)} mono />
+   352→                  </div>
+   353→                  {detail.provenance.doi && (
+   354→                    <a
+   355→                      href={`https://doi.org/${detail.provenance.doi}`}
+   356→                      target="_blank"
+   357→                      rel="noopener noreferrer"
+   358→                      className="mt-3 inline-block font-mono text-[10.5px] text-[#6F6862] underline decoration-[#D8D2C6] underline-offset-2 hover:text-[#1C1A17]"
+   359→                    >
+   360→                      DOI {detail.provenance.doi}
+   361→                    </a>
+   362→                  )}
+   363→                  <ProvenanceBlock detail={detail} />
+   364→                </section>
+   365→
+   366→                <section aria-label="Analysis" className="rounded-xl border border-[#E7E2DA] bg-white p-5">
+   367→                  <Button
+   368→                    onClick={runAnalysis}
+   369→                    disabled={running}
+   370→                    className="h-10 w-full gap-2 rounded-lg bg-[#1C1A17] text-[13px] font-medium text-white hover:bg-[#33302B] disabled:opacity-60"
+   371→                  >
+   372→                    {running ? (
+   373→                      <>
+   374→                        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+   375→                        Processing… {elapsed}s
+   376→                      </>
+   377→                    ) : (
+   378→                      <>
+   379→                        <Play className="h-4 w-4" aria-hidden />
+   380→                        {detail.mode === 'evidence' ? 'Assemble evidence & model' : 'Run analysis'}
+   381→                      </>
+   382→                    )}
+   383→                  </Button>
+   384→                  {running && detail.provenance.dataClass === 'real' && (
+   385→                    <p className="mt-2 text-center text-[11px] leading-4 text-[#8A837B]">
+   386→                      Cross-matching independent USGS seismic evidence — the catalog can take ~20 s to answer.
+   387→                    </p>
+   388→                  )}
+   389→                  {running && (
+   390→                    <div className="mt-3 space-y-2">
+   391→                      <Skeleton className="h-16 w-full" />
+   392→                      <Skeleton className="h-24 w-full" />
+   393→                    </div>
+   394→                  )}
+   395→
+   396→                  <Collapsible className="mt-3">
+   397→                    <CollapsibleTrigger className="group flex w-full items-center justify-between text-[12px] text-[#6F6862] hover:text-[#1C1A17]">
+   398→                      <span>Advanced parameters</span>
+   399→                      <ChevronDown className="h-3.5 w-3.5 transition-transform duration-150 group-data-[state=open]:rotate-180" aria-hidden />
+   400→                    </CollapsibleTrigger>
+   401→                    <CollapsibleContent className="space-y-4 pt-3.5">
+   402→                      <div>
+   403→                        <div className="mb-1.5 flex items-center justify-between">
+   404→                          <MicroLabel>Coherence threshold</MicroLabel>
+   405→                          <span className="font-mono text-[11px] tabular-nums text-[#4A443C]">{advanced.coherenceThreshold.toFixed(2)}</span>
+   406→                        </div>
+   407→                        <Slider
+   408→                          value={[advanced.coherenceThreshold]}
+   409→                          min={0.05}
+   410→                          max={0.9}
+   411→                          step={0.05}
+   412→                          onValueChange={(v) => setAdvanced((a) => ({ ...a, coherenceThreshold: v[0] }))}
+   413→                          aria-label="Coherence threshold"
+   414→                        />
+   415→                        {(() => {
+   416→                          const sugg = selectedEntry?.suggestedParams?.coherenceThreshold;
+   417→                          if (sugg === undefined || Math.abs(sugg - advanced.coherenceThreshold) < 1e-9) return null;
+   418→                          return (
+   419→                            <p className="mt-1.5 text-[10.5px] leading-3 text-[#8A837B]">
+   420→                              Suggested starting value for this scene: {sugg.toFixed(2)} — the dataset notes explain why.
+   421→                            </p>
+   422→                          );
+   423→                        })()}
+   424→                      </div>
+   425→                      <div className="flex items-center justify-between gap-3">
+   426→                        <MicroLabel>Detection floor</MicroLabel>
+   427→                        <Select
+   428→                          value={String(advanced.detectionFloor)}
+   429→                          onValueChange={(v) => setAdvanced((a) => ({ ...a, detectionFloor: Number(v) }))}
+   430→                        >
+   431→                          <SelectTrigger className="h-8 w-32 rounded-md border-[#D8D2C6] text-[12px]">
+   432→                            <SelectValue />
+   433→                          </SelectTrigger>
+   434→                          <SelectContent>
+   435→                            {['0.005', '0.01', '0.02', '0.05'].map((v) => (
+   436→                              <SelectItem key={v} value={v}>{(Number(v) * 1000).toFixed(0)} mm</SelectItem>
+   437→                            ))}
+   438→                          </SelectContent>
+   439→                        </Select>
+   440→                      </div>
+   441→                      <div className="flex items-center justify-between gap-3">
+   442→                        <MicroLabel>Significance (k·σ)</MicroLabel>
+   443→                        <Select
+   444→                          value={String(advanced.significanceK)}
+   445→                          onValueChange={(v) => setAdvanced((a) => ({ ...a, significanceK: Number(v) }))}
+   446→                        >
+   447→                          <SelectTrigger className="h-8 w-20 rounded-md border-[#D8D2C6] text-[12px]">
+   448→                            <SelectValue />
+   449→                          </SelectTrigger>
+   450→                          <SelectContent>
+   451→                            {['2', '3', '4'].map((v) => (
+   452→                              <SelectItem key={v} value={v}>{v}σ</SelectItem>
+   453→                            ))}
+   454→                          </SelectContent>
+   455→                        </Select>
+   456→                      </div>
+   457→                      <div className="flex items-center justify-between gap-3">
+   458→                        <MicroLabel>Reference region</MicroLabel>
+   459→                        <Select
+   460→                          value={advanced.referenceStrategy}
+   461→                          onValueChange={(v) => setAdvanced((a) => ({ ...a, referenceStrategy: v as AdvancedParams['referenceStrategy'] }))}
+   462→                        >
+   463→                          <SelectTrigger className="h-8 w-44 rounded-md border-[#D8D2C6] text-[12px]">
+   464→                            <SelectValue />
+   465→                          </SelectTrigger>
+   466→                          <SelectContent>
+   467→                            <SelectItem value="farField">frame margin (far field)</SelectItem>
+   468→                            <SelectItem value="fullFrameMedian">full-frame median</SelectItem>
+   469→                          </SelectContent>
+   470→                        </Select>
+   471→                      </div>
+   472→                      <div className="flex items-center justify-between gap-3">
+   473→                        <div>
+   474→                          <MicroLabel>Planar detrend</MicroLabel>
+   475→                          <p className="mt-0.5 text-[10.5px] leading-3 text-[#8A837B]">can absorb real deformation</p>
+   476→                        </div>
+   477→                        <Switch
+   478→                          checked={advanced.detrend}
+   479→                          onCheckedChange={(c) => setAdvanced((a) => ({ ...a, detrend: c }))}
+   480→                          aria-label="Planar detrend"
+   481→                        />
+   482→                      </div>
+   483→                      <Button
+   484→                        variant="ghost"
+   485→                        size="sm"
+   486→                        onClick={() => setAdvanced({
+   487→                          ...DEFAULT_ADVANCED,
+   488→                          coherenceThreshold:
+   489→                            selectedEntry?.suggestedParams?.coherenceThreshold ?? DEFAULT_ADVANCED.coherenceThreshold,
+   490→                        })}
+   491→                        className="h-7 gap-1.5 px-2 text-[11px] font-normal text-[#8A837B] hover:text-[#1C1A17]"
+   492→                      >
+   493→                        <RotateCcw className="h-3 w-3" aria-hidden /> Reset to defaults
+   494→                      </Button>
+   495→                    </CollapsibleContent>
+   496→                  </Collapsible>
+   497→                </section>
+   498→
+   499→                {error && (
+   500→                  <Alert variant="destructive" className="rounded-xl border-[#E5C4B7] bg-[#FBF3EF] text-[#9E3B2C]">
+   501→                    <AlertTitle>Analysis failed</AlertTitle>
+   502→                    <AlertDescription className="text-[12px] leading-4 text-[#9E3B2C]">{error}</AlertDescription>
+   503→                  </Alert>
+   504→                )}
+   505→
+   506→                {result && (
+   507→                  <section aria-label="Results" className="rounded-xl border border-[#E7E2DA] bg-white p-5">
+   508→                    {isEvidenceResult(result) ? (
+   509→                      <>
+   510→                        <h2 className="mb-4 text-[15px] font-semibold text-[#1C1A17]">Evidence</h2>
+   511→                        <p className="mb-5 text-[13px] leading-5 text-[#4A443C]">{result.narrative.whatChanged}</p>
+   512→                        <EvidenceViewer result={result} onGranulePolys={setGranulePolys} />
+   513→                      </>
+   514→                    ) : (
+   515→                      <QuantitativeResults result={result} />
+   516→                    )}
+   517→                  </section>
+   518→                )}
+   519→              </>
+   520→            ) : (
+   521→              <div className="space-y-5">
+   522→                <Skeleton className="h-64 w-full rounded-xl" />
+   523→                <Skeleton className="h-40 w-full rounded-xl" />
+   524→              </div>
+   525→            )}
+   526→          </div>
+   527→        </div>
+   528→      </main>
+   529→
+   530→      <footer className="mt-auto border-t border-[#E7E2DA] bg-white">
+   531→        <div className="mx-auto max-w-[1240px] px-4 py-5 sm:px-6">
+   532→          <p className="text-[11px] leading-4 text-[#8A837B]">
+   533→            Data: NASA CMR · ASF DAAC · USGS ComCat · NISAR sample products (ALOS PALSAR via the NISAR SDS).
+   534→            MOTUS is a scientific demonstration for the NASA Space Apps Challenge 2026 — not an operational service.
+   535→            Synthetic validation fixtures are clearly labelled and are not Earth observations.
+   536→          </p>
+   537→        </div>
+   538→      </footer>
+   539→    </div>
+   540→  );
+   541→}
+   542→
+   543→function StatusPill({ ok, label }: { ok: boolean | undefined; label: string }) {
+   544→  return (
+   545→    <span className="inline-flex items-center gap-1.5 rounded-full border border-[#E7E2DA] px-2.5 py-1 text-[10.5px] text-[#6F6862]">
+   546→      <span
+   547→        className={`h-1.5 w-1.5 rounded-full ${ok ? 'bg-[#4C7A5A]' : 'bg-[#B8AFA2]'}`}
+   548→        aria-hidden
+   549→      />
+   550→      {label}
+   551→    </span>
+   552→  );
+   553→}
+   554→
+   555→function Fact({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+   556→  return (
+   557→    <div className="min-w-0">
+   558→      <MicroLabel>{label}</MicroLabel>
+   559→      <div className={`mt-0.5 truncate text-[12px] leading-4 text-[#1C1A17] ${mono ? 'font-mono tabular-nums' : ''}`} title={value}>
+   560→        {value}
+   561→      </div>
+   562→    </div>
+   563→  );
+   564→}
+   565→
+   566→function ProvenanceBlock({ detail }: { detail: DatasetDetail }) {
+   567→  const [open, setOpen] = useState(false);
+   568→  const p = detail.provenance;
+   569→  return (
+   570→    <div className="mt-3.5 border-t border-[#EFEAE2] pt-3">
+   571→      {p.accessNotes && (
+   572→        <div className="mb-3 flex items-start gap-2 rounded-md border border-[#E7D9B8] bg-[#FCF8EE] px-2.5 py-2 text-[11px] leading-4 text-[#7A6438]">
+   573→          <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+   574→          <span>{p.accessNotes}</span>
+   575→        </div>
+   576→      )}
+   577→      <button
+   578→        type="button"
+   579→        onClick={() => setOpen((o) => !o)}
+   580→        aria-expanded={open}
+   581→        className="flex items-center gap-1 text-[11.5px] text-[#6F6862] hover:text-[#1C1A17]"
+   582→      >
+   583→        <ChevronRight className={`h-3 w-3 transition-transform duration-150 ${open ? 'rotate-90' : ''}`} aria-hidden />
+   584→        Full provenance &amp; processing record
+   585→      </button>
+   586→      {open && (
+   587→        <dl className="mt-2.5 space-y-2 text-[11px] leading-4">
+   588→          <ProvenRow k="Provider" v={p.provider} />
+   589→          <ProvenRow k="Product ID" v={p.productId} mono />
+   590→          <ProvenRow k="Processing" v={p.processingSoftware ?? '—'} />
+   591→          <ProvenRow k="Processed at" v={p.processingTime ? fmtDateTime(p.processingTime) : '—'} />
+   592→          <ProvenRow k="Source" v={p.sourceUrl} link />
+   593→          {p.qualityNotes && (
+   594→            <div>
+   595→              <dt className="text-[10px] font-medium uppercase tracking-[0.06em] text-[#8A837B]">Quality flags</dt>
+   596→              <dd>
+   597→                <ul className="mt-1 list-inside list-disc space-y-0.5 text-[#6F6862]">
+   598→                  {p.qualityNotes.map((q, i) => (
+   599→                    <li key={i}>{q}</li>
+   600→                  ))}
+   601→                </ul>
+   602→              </dd>
+   603→            </div>
+   604→          )}
+   605→        </dl>
+   606→      )}
+   607→    </div>
+   608→  );
+   609→}
+   610→
+   611→function ProvenRow({ k, v, mono, link }: { k: string; v: string; mono?: boolean; link?: boolean }) {
+   612→  return (
+   613→    <div className="flex gap-2">
+   614→      <dt className="w-24 shrink-0 text-[10px] font-medium uppercase leading-4 tracking-[0.06em] text-[#8A837B]">{k}</dt>
+   615→      <dd className={`min-w-0 break-words text-[#4A443C] ${mono ? 'font-mono text-[10px]' : ''}`}>
+   616→        {link ? (
+   617→          <a href={v} target="_blank" rel="noopener noreferrer" className="underline decoration-[#D8D2C6] underline-offset-2 hover:text-[#1C1A17]">
+   618→            {v.length > 60 ? v.slice(0, 57) + '…' : v}
+   619→          </a>
+   620→        ) : (
+   621→          v
+   622→        )}
+   623→      </dd>
+   624→    </div>
+   625→  );
+   626→}
+   627→

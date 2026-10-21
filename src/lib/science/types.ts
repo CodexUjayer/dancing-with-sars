@@ -101,8 +101,28 @@ export interface ScienceDataset {
   components?: Uint16Array;
   /** Number of independent looks used to form the interferogram */
   numberOfLooks: number;
-  /** Robust mean of the product's ionosphere screen uncertainty (rad), if known */
-  ionoScreenSigmaRad?: number;
+  /**
+   * Ionospheric phase-screen statistics from the product (all in radians).
+   *
+   * SEMANTICS (verified against the ASF NISAR GUNW guide, retrieved
+   * 2026-10-21): the screen is supplied by the producer but NOT applied to
+   * the stored unwrappedPhase. Therefore:
+   *   - screenVariation*: the spatial variation of the unapplied screen —
+   *     the ionospheric signal actually present in the measurement (after
+   *     constant referencing);
+   *   - uncertaintyMedian: the error of the screen estimate — how poorly
+   *     the true ionosphere is known even if a user applied the screen.
+   * The pipeline raises the detection floor to at least the larger of the
+   * two (converted to metres of LOS range change).
+   */
+  ionoScreen?: {
+    /** Robust (MAD-based) sigma of the screen itself, radians */
+    variationMadRad: number;
+    /** Standard deviation of the screen itself, radians */
+    variationStdRad: number;
+    /** Median |screen uncertainty layer|, radians */
+    uncertaintyMedianRad: number;
+  };
   /** Footprint polygon [lon, lat][] in WGS84 for map display */
   footprintPolygon: [number, number][];
   /** Approximate dataset centre in WGS84 for map focus */
@@ -180,8 +200,29 @@ export interface ChangeSummary {
   referenceSigmaM: number;
   /** Area where |d| exceeds detection threshold (km²) */
   affectedAreaKm2: number;
-  /** Systematic floor from the product's ionospheric screen uncertainty (m) */
+  /**
+   * Systematic floor from the product's ionospheric screen statistics
+   * (metres of LOS range change). Because the screen is supplied but NOT
+   * applied by the producer, this is the LARGER of (a) the unapplied
+   * screen's own spatial variation and (b) the screen estimate's
+   * uncertainty — i.e. a bound on the unresolved ionospheric contamination
+   * of the apparent LOS range change.
+   */
   systematicIonoFloorM: number;
+  /** Which of the two screen statistics set the floor ('variation'|'uncertainty'|'none') */
+  ionoFloorBasis: 'variation' | 'uncertainty' | 'none';
+  /**
+   * Machine-readable correction status of the consumed layers. The phase
+   * corrections recorded here are the authoritative product semantics
+   * (ASF GUNW guide): flattening applied; ionosphere/troposphere NOT
+   * removed from the interferometric data.
+   */
+  correctionStatus: {
+    flatteningApplied: boolean;
+    ionosphericPhaseCorrectionApplied: false;
+    troposphericPhaseCorrectionApplied: false;
+    note: string;
+  };
   /** Affected area split by sign */
   towardAreaKm2: number;
   awayAreaKm2: number;
