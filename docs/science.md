@@ -61,15 +61,47 @@ whose components the ATBD decomposes as:
       displacement  geometric  troposphere  ionosphere  noise
 ```
 
-The NISAR L2 GUNW product applies the geometric, tropospheric and
-ionospheric corrections upstream (documented in the product metadata; MOTUS
-reads and displays these flags). The displacement is therefore recovered as
+### 2.1 Correction status of the consumed layer (CORRECTED 2026-10-21)
+
+**Earlier versions of this document stated that the GUNW product applies
+the tropospheric and ionospheric corrections upstream. That statement was
+wrong.** The authoritative ASF NISAR GUNW product guide
+(https://nisar-docs.asf.alaska.edu/gunw/, retrieved 2026-10-21) states:
+
+> "The estimated ionospheric phase screen is included in the product but not
+> applied to the data layers within the GUNW product by default."
+>
+> "The GUNW product also includes geocoded lookup tables for external phase
+> corrections (e.g., solid Earth tides, hydrostatic and wet tropospheric
+> phases). These phase corrections, when available, are not removed from the
+> interferometric data."
+
+This was cross-checked against the sample product's own embedded run
+configuration (`science/LSAR/GUNW/metadata/processingInformation/parameters/runConfigurationContents`),
+which shows `ionosphere_phase_correction.enabled: true` (the screen is
+*estimated and included*) and `troposphere_delay` writing LUT products —
+consistent with "supplied, not applied". The metadata flags
+`parameters/geocoding/*CorrectionApplied` that earlier versions cited record
+corrections applied during the **geocoding (geolocation) step**, not phase
+corrections applied to the interferogram.
+
+What IS removed from the stored phase: the geometric term
+(`topographicFlatteningApplied`/`ellipsoidalFlatteningApplied` = True).
+
+**Consequence for every MOTUS measurement:** applying
 
 ```
 d_LOS = λ · φ / (4π)
 ```
 
-with **positive d_LOS = an increase in range = ground motion AWAY from the
+to the stored `unwrappedPhase` yields the **apparent relative range change
+along the line of sight** — the sum of true ground displacement and the
+uncorrected tropospheric and ionospheric contributions (plus noise). MOTUS
+labels it exactly that way, quantifies the unresolved ionospheric systematic
+(§5.2), and never describes a single-pair result as verified tectonic
+displacement. The sign convention is unchanged:
+
+**positive d_LOS = an increase in range = ground motion AWAY from the
 satellite**; negative = toward the satellite.
 
 Note: the frequently quoted alternative `d = −λ·φ/(4π)` (e.g. in much
@@ -143,18 +175,39 @@ deviates strongly from Gaussian. Pixels below the coherence threshold
 (default 0.5) are masked rather than measured, so the formula is only used
 in its valid range.
 
-### 5.2 The ionospheric systematic floor
+### 5.2 The ionospheric systematic floor (semantics corrected 2026-10-21)
 
-The analysed product's `ionospherePhaseScreenUncertainty` has a robust
-median of ≈ 4.31 rad ≈ 81 mm of equivalent range change. This is the
-uncertainty of the **already-applied** ionospheric correction: a spatially
-correlated systematic, not independent per-pixel noise. Folding it into the
-per-pixel σ would be statistically wrong (it would shrink with averaging
-like random noise); instead MOTUS raises the **detection floor** to the
-systematic level and reports it (`summary.systematicIonoFloorM`, and a
-plain-language sentence in the reliability narrative). Consequence: the 2008
-sample product honestly reports *no detection* — its residual signal is
-below its own systematic floor.
+Because the ionospheric phase screen is supplied but NOT applied to the
+stored phase (§2.1), the unresolved ionospheric contamination of the
+apparent LOS range change is bounded by the LARGER of two statistics that
+MOTUS extracts from every product:
+
+1. **the unapplied screen's own spatial variation** — the ionospheric signal
+   actually present in the measurement after constant referencing. Extracted
+   as both a robust MAD-based σ and a standard deviation of the
+   `ionospherePhaseScreen` layer;
+2. **the screen estimate's uncertainty** — the median of the
+   `ionospherePhaseScreenUncertainty` layer, i.e. how poorly the true
+   ionosphere is known even if a user chose to apply the screen.
+
+A correction-uncertainty value alone would NOT describe the spatially varying
+contribution that remains in the data — which is why both statistics are
+extracted and the maximum is used. The floor is a spatially correlated
+systematic: it is deliberately NOT folded into the per-pixel σ (that would
+let it shrink with averaging like random noise); instead it raises the
+detection floor, is reported as `summary.systematicIonoFloorM` with its
+basis (`summary.ionoFloorBasis`), and is named in the reliability narrative.
+
+Worked cases:
+
+- **LA 2008 sample product**: screen variation σ ≈ 0.37–0.60 rad
+  (7–11 mm), screen-estimate uncertainty ≈ 4.31 rad ≈ **81 mm** → the
+  uncertainty dominates (basis: `uncertainty`), and the product honestly
+  reports *no detection above floor*.
+- **Mojave 2026 operational granule** (from the 2026-10-20 analysis,
+  locally not reproducible since the granule was not retained): screen
+  variation of tens of radians dominated (basis: `variation`), floor ≈ 72 mm
+  against a max apparent LOS motion of 48 mm → no detection.
 
 ### 5.3 Combined detection rule
 
@@ -168,6 +221,31 @@ with defaults k = 3 and floor = 10 mm (or the ionospheric systematic when
 larger). The physical floor guards against declaring sub-noise variations
 significant when coherence is very high but systematic residuals dominate —
 the realistic situation for single L-band pairs.
+
+### 5.4 Detection statistics and their statistical status (2026-10-21)
+
+A per-pixel threshold plus a minimum cluster size does not by itself
+establish a controlled false-positive rate over a large, spatially
+correlated raster. MOTUS therefore:
+
+- separates valid-pixel masking from detected-pixel classification and
+  reports `maskedPixelCount`, `detectedPixelCount`, `validFraction` and the
+  median threshold actually used;
+- computes connected-cluster statistics of the detected pixels
+  (4-neighbourhood, ≥ 4 px minimum) and reports counts and sizes;
+- runs an **exploratory null-scene screen**: simulated spatially correlated
+  Gaussian noise (deterministic seeds, configurable correlation length)
+  scaled by the scene's own σ map is pushed through the same detection rule,
+  and the false-exceedance fractions and cluster counts are reported in
+  `summary.nullScreen`;
+- **does not claim a formal false-alarm rate** — calibrating one would
+  require the scene-dependent covariance of atmosphere + ionosphere +
+  decorrelation, which is not available to this system. The screen's numbers
+  are labelled exploratory wherever they appear.
+
+A zero detected area is reported as "no change detected above the configured
+threshold … inconclusive at the available sensitivity" — never as proof that
+the ground did not move.
 
 ## 6. Elastic dislocation modelling (Okada 1985)
 
@@ -224,24 +302,61 @@ the attribution thresholds (below) are correspondingly coarse.
 
 Candidate hypotheses — coseismic deformation, slow surface motion
 (subsidence/uplift/landslide), atmospheric/ionospheric residual,
-unwrapping artefact, and no-change — are evaluated by transparent,
-evidence-linked rules (never a trained classifier):
+unwrapping artefact, and no-change-above-threshold — are evaluated by
+transparent, evidence-linked rules (never a trained classifier):
 
-- **Independent evidence:** USGS ComCat events (FDSN API) whose origin times
-  fall strictly inside the acquisition window and near the footprint; their
-  moment-tensor nodal planes feed the forward model.
-- **Forward-model consistency screen:** predicted vs measured peak amplitude
-  ratio within a factor of 3 AND spatial correlation r > 0.25 →
-  "consistent"; only one check passing → "plausible"; both failing →
-  "not-supported". These thresholds are documented conventions for a coarse
-  screen, not calibrated probabilities.
-- **Insufficient evidence is a first-class output.** Every hypothesis
-  carries its evidence items and a "what would settle it" note.
+- **Event selection is explicit (2026-10-21).** In-window USGS ComCat
+  candidates are ranked by magnitude (descending), then distance to the
+  footprint centroid (ascending), then moment-tensor availability; the
+  selection, the alternatives and the exclusion reasons are returned with
+  every result (`attribution.eventSelection`). The first API result is never
+  assumed to be the most relevant.
+- **Forward-model consistency screen:** the Okada prediction is anchored at
+  the epicentre projected into the raster's own CRS (§7.1) and compared with
+  the measurement via peak-amplitude ratio and spatial correlation.
+  Agreement classes — "consistent" (amplitude within a factor of 3 AND r >
+  0.25), "plausible" (one check), "not-supported" (neither) — are
+  **exploratory screening values, not calibrated statistics**; the values and
+  their rationale travel with every result (`attribution.heuristics`), and
+  consistency is never described as causation.
+- **Insufficient evidence is a first-class output.** Every hypothesis carries
+  its evidence items and a "what would settle it" note. "No change above the
+  detection threshold" means exactly that — not that the ground did not
+  move. A single unwrapping component is never treated as proof of artefact
+  absence.
 
 *Failure modes:* amplitude ratio and correlation can be misleading when the
 event lies outside the coherent footprint or when the empirical rupture
 dimensions are far off; the UI always displays the check's components so a
 reader can judge.
+
+### 7.1 Forward-model coordinate frame (corrected 2026-10-21)
+
+Earlier versions computed raster offsets for the forward model relative to
+the **raster centre** while the fault geometry carried a geographic
+epicentre — misplacing the model whenever the epicentre was not at the grid
+centre (the synthetic fixtures hid this because their faults sit at the
+grid centre). The frame is now:
+
+- The raster CRS is read from the grid metadata (EPSG; WGS84 UTM zones
+  326xx/327xx are supported — the CRS of the NISAR GUNW products consumed).
+- The **epicentre** (lat/lon) is projected into that same zone with the
+  Snyder transverse-Mercator series (`latLonToUtmInZone`), so both the
+  raster and the event live in one common projection; degrees are never
+  mixed with metres.
+- Per-pixel offsets are `(x − epicentre.x, y − epicentre.y)` — relative to
+  the event, not the grid.
+- Fault-frame conventions (strike clockwise from north; dip from horizontal;
+  Aki & Richards rake; depth of the top edge derived from the centroid
+  depth) are unchanged and documented in §6.
+- Non-UTM grids (e.g. polar stereographic EPSG 3413/3031) disable the
+  quantitative forward model with an explicit reason rather than silently
+  misplacing it; events without a published mechanism are skipped, never
+  invented.
+
+The invariance is tested exactly in `tests/science/attribution.test.ts`:
+the prediction at a fixed geographic point is *bit-identical* on shifted
+grids, and moving the event moves the predicted peak with it.
 
 ## 8. Geodesy
 

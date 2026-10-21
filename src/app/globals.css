@@ -126,3 +126,17 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Leaflet: keep the map (and its attribution line) inside narrow viewports.
+   The attribution's single-line "Tiles © Esri — …" text otherwise forces a
+   ~470 px min-content width that overflows phone screens; letting it wrap
+   keeps the required attribution visible AND the layout contained. */
+.leaflet-container {
+  max-width: 100%;
+}
+.leaflet-control-attribution {
+  white-space: normal;
+  max-width: 100%;
+  font-size: 9px;
+  line-height: 1.35;
+}

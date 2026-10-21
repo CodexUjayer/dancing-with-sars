@@ -1,134 +1,129 @@
 # Validation
 
-Recorded 2026-10-20, from the actual test run in this repository
-(`bun test tests/`): **42 tests, 42 pass, 0 fail, 234 assertions, ~1.2 s.**
+Recorded 2026-10-21, from the actual test run in this repository
+(`bun test`): **86 tests, 86 pass, 0 fail, 485 assertions, ~3.4 s.**
+(Includes the remediation suites: clean-clone registry behaviour, event
+selection, forward-model coordinate alignment, detection statistics.)
 
 > A passing software test is not equivalent to scientific validation. This
 > page separates what is verified, how, and what deliberately remains
-> unvalidated.
+> unvalidated — and records every claim with its exact reproduction command.
 
-## 1. Test inventory
+## 1. Claim-by-claim validation table
+
+Categories: **UT** = unit test (offline, deterministic) · **SYN** = synthetic
+benchmark validation (self-consistency against analytic ground truth) ·
+**INT** = integration test with real local data · **LIVE** = live external
+API · **DOC** = documented claim from a prior run, not re-executable here.
+
+| Claim | Category | Data source | Command | Expected | Observed (2026-10-21) | Status | Limitations |
+|---|---|---|---|---|---|---|---|
+| Okada port matches DC3D reference ≤1e-8 rel. | UT | frozen benchmarks in `tests/science/okada.test.ts` | `bun test tests/science/okada.test.ts` | 0.0 worst rel. diff over 72 comparisons | passes | **REPRODUCED** | validates the port, not the physics |
+| Buried strike-slip matches 2-D screw solution | UT | analytic `atan` solution | same | 1–10% agreement | passes | **REPRODUCED** | finite-length effects explain residual |
+| Phase→LOS scale and sign (NISAR convention) | UT | `tests/science/core.test.ts` | `bun test tests/science/core.test.ts` | fringe = λ/2; +2π → +λ/2 | passes | **REPRODUCED** | convention verified from JPL D-95677 §5.7 |
+| Correction status: iono/tropo NOT applied to stored phase | UT + document | ASF GUNW guide + product run-config | `bun test tests/science/detection.test.ts` (correction-status assertions) | `correctionStatus.ionosphericPhaseCorrectionApplied === false` | passes; measured screen stats: variation 0.37–0.60 rad, uncertainty 4.31 rad | **REPRODUCED** | authoritative source: nisar-docs.asf.alaska.edu/gunw/, retrieved 2026-10-21 |
+| Strike-slip fixture recovered vs analytic truth | SYN | seeded fixture (250 m, 64×64 km) | `bun test tests/science/pipeline.test.ts` | MAE < 10 mm | MAE 2.59 mm, RMSE 3.18 mm, bias −2.04 mm, 1372 km², 12 clusters | **REPRODUCED** | synthetic self-consistency — no claim about real-Earth accuracy |
+| Thrust fixture recovered | SYN | seeded fixture | same | MAE < 10 mm | MAE 3.93 mm, RMSE 4.86 mm, 494 km² | **REPRODUCED** | same as above |
+| Null fixture: zero detection | SYN | seeded fixture | same | 0 km² detected | 0 km², 0 clusters, RMSE 1.83 mm vs truth | **REPRODUCED** | one seed; see null-scene screen below for broader behaviour |
+| Null-scene screen (exploratory FP behaviour) | SYN | 8 correlated-noise scenes per run | `bun test tests/science/detection.test.ts` | small, deterministic exceedance fraction | strikeslip 0.282%, thrust 0.326%, null 0.140% mean false-exceedance | **REPRODUCED** | NOT a calibrated false-alarm rate (documented) |
+| Clean clone lists datasets without crashing | UT | temp-dir scenarios | `bun test tests/data/registry.test.ts` | structured states, no throw | passes (missing/incomplete/invalid scenarios) | **REPRODUCED** | |
+| Event ranking never takes first API result | UT | synthetic event lists | `bun test tests/science/attribution.test.ts` | largest/nearer/with-mechanism wins; exclusions carry reasons | passes | **REPRODUCED** | ranking is a relevance order, not causation |
+| Forward model anchored at epicentre | UT | synthetic grids | same | bit-identical values on shifted grids; peak follows the event | passes (max diff 0.0 on probe points) | **REPRODUCED** | UTM-only; polar-stereographic granules disable the check |
+| LA 2008 sample: honest negative below iono floor | INT | committed derived product (`data/derived/nisar-la-2008`, checksums in `docs/data-manifest.md`) | `bun test tests/science/pipeline.test.ts` | floor reported; no detection above floor | valid 14.6%, coh. median 0.57, ref σ 18.5 mm, iono floor 81.0 mm (basis: uncertainty), median threshold 81.0 mm, max apparent LOS 89.4 mm → 0.013 km² stray pixels only | **REPRODUCED** | real product, but no independent geodetic comparison exists |
+| Extractor validates GUNW structure | UT | synthetic HDF5 fixtures | `python3 tools/test_extract_gunw.py` | 26 checks pass | 26/26 pass (exit 0) | **REPRODUCED** | synthetic fixtures only; real-product extraction verified once for LA |
+| Mojave 2026 quantitative analysis (81→72 mm floor, M4.06 cross-match, 48 mm max LOS) | DOC + LIVE | operational granule analysed 2026-10-20 | `tools/fetch_nisar_granule.py` + `tools/extract_gunw.py` + `POST /api/analyses` | — | — | **NOT REPRODUCED** | the 2.58 GB granule was not retained in this environment (data/ is not committed); the derived directory is absent and the dataset correctly reports state `missing` with instructions. The figures stand as documented observations of that run, not re-verified results. |
+| Panama evidence (granule catalogue, M7.7 event, browse imagery) | INT + LIVE | committed CMR/USGS caches + live re-verification | `POST /api/analyses {"datasetId":"evidence-panama-2026"}` | granules bracket event; conservative language | 3 granules, selection by explicit criteria (epicentre containment), narrative uses the mandated "has not yet been established" wording | **REPRODUCED** | browse imagery ≠ science rasters; no quantitative claim |
+| USGS/CMR live queries work | LIVE | FDSN + CMR APIs | UI live checks / `curl` | events and granules return | verified during browser E2E (2026-10-21) | **REPRODUCED** | network-dependent; app degrades explicitly on failure |
+
+## 2. Test inventory (86 tests)
 
 ### tests/science/okada.test.ts — the physics engine
-
-| Test | What it proves |
-|---|---|
-| matches the DC3D reference implementation to ≤1e-8 relative | 24 benchmark geometries × 3 slip modes (dips 10°–90°, varied depths/footprints) against the vendored reference port of Okada's official code; worst relative difference observed: **0.0** (8 significant digits, 72 scalar comparisons) |
-| friendly wrapper places the fault BELOW the top-edge depth | buried vertical strike-slip matches the 2-D analytic screw solution `u(y)=(1/π)[atan(y/d₁)−atan(y/d₂)]` within 1–10% (finite-length effects explain the residual); uy=uz=0 exactly by symmetry |
-| dip-slip U2=+1 is normal-sense | hanging wall drops across the trace (uz jump < −0.5) |
-| strike-slip U1=+1 is sinistral | trace-jump sign test |
-| tensile U3=+1 is opening | walls separate across the trace |
-| displacement decays to ~0 far from the fault | far-field sanity (|u| < 0.01 at 10 fault-lengths) |
-| moment and area scaling behave sensibly | Mw 7 → M0 ≈ 3.55×10¹⁹ N·m (Hanks & Kanamori); area ≈ 750 km² (Wells & Coppersmith); slip ~1.5 m |
-
-The benchmark values are frozen in the test file; regenerating requires the
-vendored `tools/dc3d_reference.py`, so the reference is reproducible.
+Unchanged from the pre-remediation suite: 24 benchmark geometries × 3 slip
+modes against the vendored DC3D reference (worst relative difference 0.0),
+the analytic screw-dislocation calibration, slip-sense trace-jump tests,
+far-field decay, and the scaling-relation sanity checks.
 
 ### tests/science/core.test.ts — conventions and statistics
-
-| Test | What it proves |
-|---|---|
-| one fringe = λ/2; +2π → +λ/2 range increase | the phase→displacement scale and sign under the NISAR convention |
-| round-trip phase↔displacement | internal consistency |
-| wrapPhase maps into (−π, π] | wrapping convention |
-| k-cycle unwrapping error = k·λ/2 | ambiguity magnitude (118 mm/cycle at L band) |
-| grid conversion propagates NaN | no-data handling |
-| LOS vector is a unit vector; projection signs | pure vertical motion projects to −cos θ; motion toward the satellite is negative range change |
-| reconstruction matches the NISAR sample product vector | rebuilt (θ, H) → E/N agrees with the product's stored radarGrid means (−0.4005, −0.0837) within 0.02 |
-| σ_φ monotonic in γ and L; known value at γ=0.5, L=119 (0.112 rad) | the uncertainty formula is exactly Rodríguez & Martín (1992) |
-| combined σ adds in quadrature; detection threshold = max(k·σ, floor) | error propagation and the detection rule |
-| median/MAD/mean/std/quantile/planar fit/Pearson | the statistics layer (exact plane recovery; correlation edge cases) |
+Unchanged: fringe/sign conventions, LOS vector reconstruction against the
+product's stored radarGrid, Rodríguez & Martín σφ values, robust statistics.
 
 ### tests/science/pipeline.test.ts — geodesy, gates, end-to-end
+UTM round trips, grid-corner inverse projection, Stage A rejection gates,
+null/strike-slip fixture recovery, LA real-product honesty (data-dependent,
+self-skipping when the local product is absent), determinism.
 
-| Test | What it proves |
-|---|---|
-| UTM zone determination; round trip < 1 m | Snyder series correctness at 5 sites including both hemispheres |
-| NISAR sample grid corner inverse-projection | the extracted 2008 grid's corner falls inside the product's recorded footprint bbox |
-| Stage A rejects mismatched grids / inverted times / implausible wavelength | the validation gates fire |
-| **null fixture produces no detection** | false-alarm control: zero affected area, "no change" hypothesis *supported*, RMSE vs truth 1.83 mm |
-| **strike-slip fixture recovered** | 1372 km² detected above threshold; pipeline-vs-truth MAE 2.59 mm, RMSE 3.18 mm, bias −2.04 mm over ~65k points |
-| real NISAR LA sample runs honestly | ionospheric systematic floor 81 mm reported; valid fraction 14.7%; coherence median 0.57; the reliability narrative names the ionospheric limitation |
-| coherence-threshold rejection | a 0.97 threshold aborts with a clear error rather than producing noise |
-| fixtures are deterministic | seeded PRNG + identical rasters on repeated construction |
+### tests/science/attribution.test.ts — NEW (remediation)
+Event ranking (unsorted inputs, ties, missing magnitudes, window/distance
+exclusions), forward-model epicentre anchoring (move-event tracking,
+bit-exact grid-shift invariance, near-epicentre peak, non-UTM refusal,
+mechanism-missing skip), and attribution language assertions ("consistent,
+not causation"; "no detection above threshold, NOT no motion"; single
+component ≠ proof of artefact absence).
 
-## 2. End-to-end validation results (measured, not asserted by hand)
+### tests/science/detection.test.ts — NEW (remediation)
+Masking/detection bookkeeping, NaN handling, cluster statistics
+(4-neighbourhood, stragglers ignored), correlated-noise null-scene screens
+(determinism, correlation-length exposure, cluster-forming failure mode,
+empty-mask refusal), and pipeline integration of the new summary fields.
 
-Synthetic strike-slip fixture (dextral, Mw≈6.5-equivalent, 250 m posting,
-patchy decorrelation, ±4 mm atmospheric ramp):
+### tests/data/registry.test.ts — NEW (remediation)
+Clean-clone behaviour: listing with no data, partial data, corrupt data
+(size-mismatched rasters, unparseable meta, malformed Panama cache);
+availability explanations naming the acquisition path; the Panama granule
+selected by explicit criteria rather than array order.
 
-| Metric | Value |
-|---|---|
-| MAE vs analytic truth | 2.59 mm |
-| RMSE | 3.18 mm |
-| Bias | −2.04 mm |
-| Peak LOS recovered | +135.7 / −84.2 mm |
-| Affected area above threshold | 1372 km² |
-| Valid fraction | 99.2% |
-
-Synthetic thrust fixture: MAE 3.93 mm, RMSE 4.86 mm, peak +391 mm, 494 km².
-Synthetic null fixture: **0 km² detected** (correct), RMSE 1.83 mm.
-
-Real NISAR LA sample (ALOS PALSAR via NISAR SDS): 14.7% valid pixels
-(terrain/masking), median coherence 0.57, reference scatter 18.6 mm,
-ionospheric systematic floor 81 mm → **no detection above floor**. This is
-the scientifically correct outcome for a pair whose residual signal sits
-below its own systematic budget, and the application says exactly that.
-
-Real NISAR operational granule — Mojave, May–June 2026 (12-day pair
-through a disturbed ionosphere): 324,103 valid pixels (2% of a 4401 × 4338
-frame — the rest is either decorrelated or carries invalid non-unwrapped
-phase), analysed area 2,074 km², median coherence 0.14, reference scatter
-0.5 mm (MAD-degenerate → σ fallback, warned), ionospheric systematic floor
-71.8 mm, **max |LOS displacement| 48 mm → 0 km² detected**. The live USGS
-cross-match finds the real M4.06 earthquake inside the frame and window
-(2026-06-01, Johannesburg, CA) and the coseismic hypothesis is reported as
-*insufficient evidence* — its expected deformation is far below the floor.
-Attribution: no-change **supported**, atmospheric residual *plausible*.
-
-**Two real-data defects were caught by this dataset and fixed with
-regression checks:**
-
-1. *Product phase-filler false positive.* Without gating on the
-   unwrapping connected components, the granule's cc = 0 noise field
-   (finite but invalid phase, std ≈ 5 rad) produced a 5,923 km² "detection"
-   with a reference MAD of exactly zero. Cross-tabulating the component
-   labels against the phase field showed cc = 1 (the actual measurement)
-   is 99.7% exact-zero phase — the stable truth. Stage B now enforces
-   component ≥ 1 and warns when large fractions are excluded (86% here).
-2. *Raster aspect bug.* The browser overlay computed its canvas aspect
-   from a Mercator span in radians divided by a longitude span in degrees
-   — a 57× unit mismatch that squashed every canvas to a 760 × 64 strip.
-   Dense scenes hid it; the Mojave's 2%-valid sparse mask exposed it.
-   Fixed (radians/radians) and re-verified: overlays now render at
-   ~1024 × 1001 for this frame.
+### tools/test_extract_gunw.py — NEW (remediation)
+26 checks: valid synthetic GUNW-layout fixture extracts; six corruption
+modes (missing layer, shape mismatch, positive dy, unsupported spec version,
+no co-pol, coordinate mismatch) each rejected with exit 2 and a
+defect-naming message.
 
 ## 3. What is deliberately NOT validated
 
 - **No comparison against independent geodetic measurements** (GNSS, or
-  published InSAR studies of the 2008 LA region) has been ingested. Such a
-  comparison is the natural next validation step and is documented as a gap.
-- **The Panama prediction is a forward model, not a validated
-  measurement.** The M7.7 products require Earthdata credentials to
-  download; nothing in this deployment claims to have measured that event.
-- **Attribution thresholds are conventions, not calibrated statistics.**
-  No precision/recall claims are made anywhere for the hypothesis screen,
-  and no probability calibration exists.
+  published InSAR studies of the 2008 LA region) has been ingested. This
+  remains the natural next validation step and is documented as a gap.
+- **The Mojave 2026 real-data analysis is not currently reproducible** from
+  this checkout (credential-gated 2.58 GB source product not retained). Its
+  documented figures are honest records of a prior run, nothing more.
+- **The Panama prediction is a forward model, not a validated measurement.**
+  Whether the bracketing products contain a measurable earthquake signal
+  has not been established.
+- **Attribution thresholds are exploratory conventions, not calibrated
+  statistics.** No precision/recall claims are made anywhere for the
+  hypothesis screen; the values and their rationale ship with every result.
+- **The null-scene screen is not a formal false-alarm-rate calibration** —
+  it models correlated Gaussian noise only, not atmospheric/ionospheric
+  covariance.
 - **The coherence-based σ underestimates below γ ≈ 0.3** (documented;
   masked pixels keep the formula inside its valid range).
-- **Single-run geodesy tolerances:** UTM series accuracy (~metre level) is
-  adequate for 80 m products but is not geodetic-grade.
-- **No automated UI tests.** The interface was verified interactively
-  (dataset selection, both analysis modes, layer switching, methodology
-  drawer, live CMR query, responsive layout, footer behaviour) during
-  development; those checks are not repeatable artifacts.
+- **UTM series accuracy (~metre level)** is adequate for 80 m products but
+  is not geodetic-grade.
+- **No automated UI tests.** The interface is verified interactively during
+  development (dataset selection, both analysis modes, layer switching,
+  methodology drawer, live CMR query, responsive layout, footer behaviour);
+  those checks are not repeatable artifacts.
 
-## 4. Reproducibility
+## 4. Provisional-product caveat
+
+The operational NISAR collection analysed for the Mojave dataset is
+**NISAR_L2_GUNW_PROVISIONAL_V1** — an interim product whose provider states
+it is not fully validated. The existence of a NASA product is not
+independent validation of MOTUS's results on it, and MOTUS's own
+measurements on provisional products inherit that caveat (displayed in the
+provenance panel).
+
+## 5. Reproducibility
 
 - Fixtures are seeded (`mulberry32`); the pipeline is a pure function of
-  (dataset, parameters, USGS events).
+  (dataset, parameters, USGS events). Null-scene screens use fixed seeds.
+- Real derived products carry SHA-256 checksums in `docs/data-manifest.md`
+  (`python3 tools/generate_data_manifest.py` to regenerate/compare).
 - Analysis runs are persisted (`AnalysisRun` table) with parameters,
   summaries and durations; identical parameter sets are served from an
   in-memory cache within a server session.
 - The Okada benchmarks are frozen in the test file and regenerable from the
-  vendored reference implementation.
+  vendored reference implementation (`tools/dc3d_reference.py`).
+- CI (`.github/workflows/ci.yml`) runs lint, strict type check, offline
+  tests and the production build on a clean checkout — no credentials, no
+  untracked data.

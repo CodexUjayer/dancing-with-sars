@@ -220,7 +220,7 @@ export async function POST(req: Request) {
         epsg,
       };
       const raster = buildPredictionOnGrid(meta, event, ds.geometry);
-      if (raster) {
+      if (!('error' in raster)) {
         const n = size * size;
         const maskArr = new Uint8Array(n);
         for (let i = 0; i < n; i++) maskArr[i] = Number.isNaN(raster.data[i]) ? 0 : 1;

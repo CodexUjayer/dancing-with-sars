@@ -29,9 +29,24 @@ export function utmZone(lonDeg: number): number {
 
 /** WGS84 latitude/longitude (degrees) -> UTM easting/northing (metres). */
 export function latLonToUtm(latDeg: number, lonDeg: number): UtmCoord {
+  return latLonToUtmInZone(latDeg, lonDeg, utmZone(lonDeg));
+}
+
+/**
+ * WGS84 lat/lon -> UTM in an EXPLICIT zone (not the auto zone of the longitude).
+ *
+ * Needed whenever two geographic points must be compared in one common
+ * projection — e.g. projecting an earthquake epicentre onto a raster whose
+ * EPSG fixes the zone. Points up to a few hundred kilometres outside the
+ * zone remain accurate at the metre level (the transverse Mercator series
+ * degrades gracefully); beyond that the caller should reproject properly.
+ */
+export function latLonToUtmInZone(latDeg: number, lonDeg: number, zone: number): UtmCoord {
+  if (!Number.isInteger(zone) || zone < 1 || zone > 60) {
+    throw new Error(`Invalid UTM zone: ${zone}`);
+  }
   const lat = (latDeg * Math.PI) / 180;
   const lon = (lonDeg * Math.PI) / 180;
-  const zone = utmZone(lonDeg);
   const lon0 = ((zone - 1) * 6 - 180 + 3) * (Math.PI / 180); // central meridian
 
   const sinLat = Math.sin(lat);
@@ -78,6 +93,13 @@ export function latLonToUtm(latDeg: number, lonDeg: number): UtmCoord {
 /** EPSG code for a WGS84 UTM zone (northern/southern). */
 export function utmZoneToEpsg(zone: number, hemisphere: 'N' | 'S'): number {
   return hemisphere === 'N' ? 32600 + zone : 32700 + zone;
+}
+
+/** Inverse of utmZoneToEpsg: parse a WGS84 UTM EPSG code. */
+export function zoneFromEpsg(epsg: number): { zone: number; hemisphere: 'N' | 'S' } | undefined {
+  if (epsg >= 32601 && epsg <= 32660) return { zone: epsg - 32600, hemisphere: 'N' };
+  if (epsg >= 32701 && epsg <= 32760) return { zone: epsg - 32700, hemisphere: 'S' };
+  return undefined;
 }
 
 /** EPSG code for a WGS84 latitude/longitude. */

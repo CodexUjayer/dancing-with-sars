@@ -6,6 +6,19 @@ relevant items where they matter.
 
 ## Scientific
 
+0. **Measurements are apparent relative LOS range change — atmospheric and
+   ionospheric contributions are NOT removed from the consumed phase.**
+   Per the official ASF NISAR GUNW guide (retrieved 2026-10-21), the
+   ionospheric phase screen is supplied but not applied, and tropospheric
+   corrections are supplied as lookup tables and not removed from the
+   interferometric data. MOTUS quantifies the unresolved ionospheric
+   systematic as a detection floor (screen variation vs. screen uncertainty,
+   whichever is larger) and labels every measurement accordingly — but it
+   does not (and, without applying the supplied corrections itself, cannot)
+   produce atmosphere-free displacement. *Resolve:* apply the supplied
+   screens/LUTs with verified units and sign conventions, or ingest
+   externally corrected products.
+
 1. **Single interferogram per analysis.** No time series, no stacking, no
    averaging of atmospheric noise across pairs. *Consequence:* slow
    processes cannot be separated from single events, and the reliability
@@ -18,14 +31,15 @@ relevant items where they matter.
    decomposition.
 
 3. **Attribution is a rule-based screen, not a calibrated classifier.**
-   No precision/recall or probability calibration is claimed anywhere.
+   No precision/recall or probability calibration is claimed anywhere; the
+   screening values (amplitude-ratio factor, correlation floor, atmospheric
+   plausibility value) are exploratory conventions attached to every result.
    *Resolve:* a labelled validation corpus (events with independently
    modelled deformation) would be required before any statistical claim.
 
 4. **Forward-model amplitude precision is order-of-magnitude.** The
    Wells & Coppersmith (1994) area scaling scatters by ~0.25 decades and a
-   2:1 aspect is assumed; the consistency thresholds (factor 3, r > 0.25)
-   are conventions. *Resolve:* published finite-fault models where they
+   2:1 aspect is assumed. *Resolve:* published finite-fault models where they
    exist.
 
 5. **Coherence-based σ underestimates below γ ≈ 0.3.** Documented in the

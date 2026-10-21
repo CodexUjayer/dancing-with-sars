@@ -28,8 +28,8 @@ import { DEFAULT_PARAMS } from './types';
 import { validateDataset } from './validation';
 import { phaseGridToDisplacement } from './phase';
 import { combinedSigmaM } from './uncertainty';
-import { runDetection } from './detection';
-import { evaluateAttribution, forwardModelCheck } from './attribution';
+import { runDetection, runNullSceneScreen } from './detection';
+import { evaluateAttribution, forwardModelCheck, rankEventsForPair } from './attribution';
 import { median, madSigma, std, planarFit } from './statistics';
 
 /** Base64-encode a typed array (little-endian, platform-checked). */
@@ -301,6 +301,27 @@ export function runPipeline(
     coh,
   );
 
+  // Exploratory null-scene screen on the transport-resolution grid: the
+  // full-resolution screen would be needlessly expensive on ~2e7-pixel
+  // frames, and the display-scale behaviour is the relevant diagnostic for
+  // the reader. Deterministic seeds keep the result reproducible.
+  const maxSidePre = 160;
+  const factorNs = Math.max(1, Math.ceil(Math.max(w, h) / maxSidePre));
+  const nsDisp = downsample(disp, w, h, factorNs);
+  const nsSigma = downsample(sigma, w, h, factorNs);
+  const nsMask = downsampleMask(mask, w, h, factorNs);
+  const nullScreen = runNullSceneScreen(
+    {
+      meta: { ...meta, width: nsDisp.w, height: nsDisp.h, xSpacing: meta.xSpacing * factorNs, ySpacing: meta.ySpacing * factorNs },
+      displacement: nsDisp.data,
+      sigma: nsSigma.data,
+      mask: nsMask.data,
+      k: params.significanceK,
+      floorM: effectiveFloorM,
+    },
+    { scenes: 8, correlationLengthPx: 8, seed: 20261021 },
+  );
+
   // Connected-component statistics.
   let ccCount = 0;
   if (ds.components) {
@@ -320,15 +341,33 @@ export function runPipeline(
 
   const summary: ChangeSummary = {
     ...det.stats,
+    clusters: det.clusters,
+    nullScreen,
     referenceOffsetM: refOffset,
     referenceSigmaM: refSigma,
     connectedComponentCount: ccCount,
     systematicIonoFloorM: ionoFloorM,
+    ionoFloorBasis,
+    correctionStatus: {
+      flatteningApplied: true, // verified from product flags (topographic + ellipsoidal)
+      ionosphericPhaseCorrectionApplied: false, // screen supplied, not applied (ASF guide)
+      troposphericPhaseCorrectionApplied: false, // LUTs supplied, not removed (ASF guide)
+      note:
+        'The measured field is apparent relative LOS range change: geometric flattening is applied, ' +
+        'but the ionospheric phase screen and tropospheric corrections supplied with the product are ' +
+        'NOT removed from the interferometric data (ASF NISAR GUNW guide, retrieved 2026-10-21). ' +
+        'Residual atmospheric/ionospheric contamination is quantified as the systematic floor.',
+    },
   };
 
   // ---- Stage E: attribution ------------------------------------------------------
-  const fm = forwardModelCheck(ds, usgsEvents[0], disp, mask);
-  const attribution = evaluateAttribution(ds, summary, usgsEvents, fm);
+  // Event selection is explicit and documented (never "first API result"):
+  // rankEventsForPair orders in-window candidates by magnitude, proximity to
+  // the footprint and mechanism availability, and returns the alternatives
+  // and criteria for display.
+  const selection = rankEventsForPair(usgsEvents, ds);
+  const fm = forwardModelCheck(ds, selection.primary, disp, mask);
+  const attribution = evaluateAttribution(ds, summary, selection, fm);
 
   // ---- Validation against ground truth (synthetic fixtures) ---------------------
   let validationBlock: AnalysisResult['validation'] | undefined;
@@ -374,21 +413,21 @@ export function runPipeline(
   const whatChanged = !credibleDetection
     ? strayPixels
       ? `Isolated pixels totalling about ${summary.affectedAreaKm2.toFixed(2)} km² crossed the detection threshold — below the ${minCredibleAreaKm2.toFixed(0)} km² minimum credible area for this ${ds.provenance.temporalBaselineDays}-day pair. In a scene at this coherence level that is consistent with statistical noise, not ground motion.`
-      : `No ground motion above the detection threshold (${effectiveFloorMm.toFixed(0)} mm for this product) was found in this ${ds.provenance.temporalBaselineDays}-day radar pair. The surface appears stable at the level this measurement can resolve.`
-    : `The radar measurement shows ground motion between ${ds.provenance.referenceTime.slice(0, 10)} and ${ds.provenance.secondaryTime.slice(0, 10)}: an area of about ${summary.affectedAreaKm2.toFixed(0)} km² moved by more than the detection threshold, ${ds.isSynthetic ? '(synthetic validation fixture)' : 'measured along the satellite line of sight'}.`;
+      : `No change above the detection threshold (${effectiveFloorMm.toFixed(0)} mm for this product) was detected in this ${ds.provenance.temporalBaselineDays}-day radar pair. The result is inconclusive at the available sensitivity: motion smaller than the threshold, or hidden below ${((1 - summary.validFraction) * 100).toFixed(0)}% of the frame that lost coherence, cannot be excluded.`
+    : `The radar measurement shows apparent line-of-sight range change between ${ds.provenance.referenceTime.slice(0, 10)} and ${ds.provenance.secondaryTime.slice(0, 10)}: an area of about ${summary.affectedAreaKm2.toFixed(0)} km² exceeded the detection threshold, ${ds.isSynthetic ? '(synthetic validation fixture)' : 'measured along the satellite line of sight'}. ${ds.isSynthetic ? '' : 'Because atmospheric and ionospheric corrections are not applied to the stored phase, this is apparent range change — consistent with ground motion, not proof of it.'}`;
   const howMuch = !credibleDetection
-    ? `Upper bound on motion: less than ${mm(Math.max(effectiveFloorM, 3 * summary.referenceSigmaM))} mm anywhere in the analysed area.`
-      : `Peak motion: ${mm(summary.maxAwayM)} mm away from the radar and ${mm(summary.maxTowardM)} mm toward it. Typical per-pixel measurement uncertainty is ±${mm(summary.medianSigmaM)} mm (one sigma), so the peaks are ${(
+    ? `Upper bound on apparent motion: less than ${mm(Math.max(effectiveFloorM, 3 * summary.referenceSigmaM))} mm anywhere in the analysed area.`
+      : `Peak apparent motion: ${mm(summary.maxAwayM)} mm away from the radar and ${mm(summary.maxTowardM)} mm toward it. Typical per-pixel measurement uncertainty is ±${mm(summary.medianSigmaM)} mm (one sigma), so the peaks are ${(
           Math.max(Math.abs(summary.maxAwayM), Math.abs(summary.maxTowardM)) /
           Math.max(summary.medianSigmaM, 1e-9)
-        ).toFixed(0)}× the per-pixel noise.`;
+        ).toFixed(0)}× the per-pixel noise — note that spatially correlated systematics do not average down like this random-noise term.`;
   const reliability =
     `${(summary.validFraction * 100).toFixed(0)}% of the frame retained sufficient coherence for measurement ` +
     `(median coherence ${summary.coherenceMedian.toFixed(2)}). Reference-region scatter: ±${mm(summary.referenceSigmaM)} mm; ` +
     (ionoFloorM > 0
-      ? `the dominant unmodelled residual is the product's ionospheric correction systematic of about ±${mm(ionoFloorM)} mm at screen spatial scales, so smaller long-wavelength signals cannot be confidently attributed to ground motion from this single pair. `
-      : 'it dominates unmodelled residuals such as atmosphere. ') +
-    `${ccCount > 1 ? `Phase unwrapping split the scene into ${ccCount} regions — treat step-like boundaries with caution.` : 'Phase unwrapping is consistent across the scene.'} ` +
+      ? `the dominant unresolved residual is ionospheric: the product supplies a phase screen but does not apply it to the stored phase, and the ${ionoFloorBasis === 'variation' ? "screen's own spatial variation" : "screen estimate's uncertainty"} corresponds to about ±${mm(ionoFloorM)} mm of LOS range change. Apparent signals below that level cannot be confidently attributed to ground motion from this single pair. `
+      : 'unmodelled atmospheric residuals remain (the product does not remove them from the phase). ') +
+    `${ccCount > 1 ? `Phase unwrapping split the scene into ${ccCount} regions — treat step-like boundaries with caution.` : 'Phase unwrapping is consistent across the scene (a single component lowers, but does not eliminate, the chance of cycle-jump artefacts).'} ` +
     'A single interferogram cannot separate slow processes from one-off events.';
 
   // ---- Transport grid ------------------------------------------------------------

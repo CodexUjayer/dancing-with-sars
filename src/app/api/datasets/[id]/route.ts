@@ -72,6 +72,7 @@ export async function GET(
           ? { width: ds.phase.meta.width, height: ds.phase.meta.height, epsg: ds.phase.meta.epsg }
           : undefined,
         numberOfLooks: ds.numberOfLooks,
+        availability,
       },
       event,
       granules: granules.map((g) => ({

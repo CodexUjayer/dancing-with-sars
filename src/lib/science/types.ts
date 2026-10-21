@@ -226,6 +226,16 @@ export interface ChangeSummary {
   /** Affected area split by sign */
   towardAreaKm2: number;
   awayAreaKm2: number;
+  /** Pixels failing the quality mask (everything not valid). */
+  maskedPixelCount: number;
+  /** Valid pixels classified as detected. */
+  detectedPixelCount: number;
+  /** Median detection threshold over valid pixels (m). */
+  thresholdMedianM: number;
+  /** Connected clusters of detected pixels (4-neighbourhood, >= 4 px). */
+  clusters: import('./detection').ClusterStats;
+  /** Exploratory correlated-noise null-scene screen (never a calibrated FAR). */
+  nullScreen: import('./detection').NullSceneResult;
   /** Extreme values (metres; + = away from radar, − = toward) */
   maxAwayM: number;
   maxTowardM: number;
@@ -289,17 +299,30 @@ export interface Hypothesis {
 export interface AttributionOutput {
   /** Ordered best-first */
   hypotheses: Hypothesis[];
-  /** USGS events inside the acquisition window and near the footprint */
+  /** USGS events inside the acquisition window and near the footprint (ranked) */
   events: UsgsEventLite[];
+  /** How the primary event was chosen; alternatives + exclusion reasons. */
+  eventSelection: {
+    criteria: import('./attribution').EventSelection['criteria'];
+    excluded: Array<{ id: string; reason: string }>;
+    alternatives: Array<{ id: string; magnitude: number; place: string; time: string }>;
+  };
   /** Forward-model comparison when an event exists and geometry is known */
   forwardModelCheck?: {
     eventId: string;
+    /** True when the check could not run (no mechanism, unsupported CRS…). */
+    skipped: boolean;
+    skipReason?: string;
     amplitudeRatio: number;
     patternCorrelation: number;
     predictedPeakM: number;
     measuredPeakM: number;
+    /** Epicentre and its projection into the raster CRS (when the check ran). */
+    epicentre?: { lat: number; lon: number; projectedX: number; projectedY: number; epsg: number };
     note: string;
   };
+  /** The exploratory screening values used (visible, reproducible). */
+  heuristics: import('./attribution').AttributionHeuristics;
   methodNote: string;
 }
 

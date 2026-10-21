@@ -55,66 +55,101 @@ without access notes.
    surfaced in the UI and in a pipeline warning when applied.
 
 Upstream processing (orbit, coregistration, topographic/ellipsoidal
-flattening, ionospheric and tropospheric corrections, SNAPHU unwrapping,
-geocoding) is performed by the NISAR SDS before distribution; MOTUS reads
-the product's own flags documenting each correction and displays them,
-rather than reprocessing (see docs/data-sources.md §§2–3).
+flattening, SNAPHU unwrapping, geocoding) is performed by the NISAR SDS
+before distribution; MOTUS reads the product's own flags documenting each
+step and displays them, rather than reprocessing (see docs/data-sources.md
+§§2–3). **Correction status (corrected 2026-10-21):** per the official ASF
+GUNW guide, the ionospheric phase screen is supplied but NOT applied to the
+stored phase, and tropospheric corrections are supplied as lookup tables
+and NOT removed from the interferometric data (docs/science.md §2.1). All
+MOTUS measurements are therefore *apparent relative LOS range change*.
 
 ## Stage C — change measurement
 
 - Phase → displacement: `d = λφ/(4π)` under the verified NISAR convention
-  (docs/science.md §2); positive = away from the satellite.
+  (docs/science.md §2); positive = away from the satellite. Because the
+  product does not remove atmospheric/ionospheric contributions from the
+  stored phase, this quantity is the **apparent relative LOS range change**.
 - Summary statistics over valid pixels: affected area, toward/away areas,
   extremes, displacement-weighted anomaly centroid, principal-axis
   orientation and elongation (second moments of |d|), and the signed
   displacement integral over the anomaly (m·km²).
+- **Detection bookkeeping (2026-10-21):** masking is separated from
+  classification — `maskedPixelCount`, `detectedPixelCount`, `validFraction`
+  and the median threshold actually used are reported; connected clusters of
+  detected pixels (4-neighbourhood, ≥ 4 px) are counted with sizes and the
+  largest cluster area.
+- **Null-scene screen (2026-10-21, exploratory):** 8 deterministic
+  simulated no-change scenes with spatially correlated Gaussian noise
+  (correlation length 8 px at analysis-grid scale) are pushed through the
+  same detection rule; the false-exceedance fractions and cluster counts are
+  reported as `summary.nullScreen` and labelled exploratory — never as a
+  calibrated false-alarm rate.
 - Connected components: components of the unwrapping label map holding ≥1%
   of valid pixels are counted; value 65535 (invalid) is excluded. Multiple
   components are flagged in the reliability narrative as potential
-  cycle-jump boundaries.
+  cycle-jump boundaries. A single component lowers, but does not eliminate,
+  the chance of cycle errors (never stated as proof of absence).
 
 ## Stage D — uncertainty
 
 Per-pixel one-sigma:
 
 ```
-σ_total = sqrt( σ_pixel² + σ_ref² + σ_iono² )
+σ_total = sqrt( σ_pixel² + σ_ref² )
 ```
 
 - `σ_pixel` from the coherence formula (Rodríguez & Martín 1992) with the
   product's look count (119 for the analysed sample);
-- `σ_ref` = MAD-based robust sigma of the reference region;
-- `σ_iono` included only when the dataset declares an ionospheric screen
-  uncertainty **and** it is treated as per-pixel (synthetic fixtures);
-  for the real product the ionospheric term is instead handled as the
-  systematic detection floor below.
+- `σ_ref` = MAD-based robust sigma of the reference region (standard-
+  deviation fallback when the MAD degenerates, with a warning).
+
+**Ionospheric systematic floor (semantics corrected 2026-10-21):** because
+the supplied screen is NOT applied to the stored phase, the unresolved
+ionospheric contamination is bounded by the LARGER of the unapplied screen's
+own spatial variation and the screen estimate's uncertainty — both
+extracted per product. The floor is spatially correlated and therefore
+raises the detection floor rather than the per-pixel noise
+(docs/science.md §5.2); its basis is reported (`ionoFloorBasis`).
 
 **Detection rule:** `|d| > max(k·σ_total, floor)` with k = 3 by default and
-floor = max(10 mm, ionospheric systematic) — the systematic floor from the
-product's ionosphere screen uncertainty (81 mm for the analysed sample) is
-spatially correlated and therefore raises the floor rather than the
-per-pixel noise (docs/science.md §5.2).
+floor = max(10 mm, ionospheric systematic). The machine-readable
+`correctionStatus` block in every result states exactly which corrections
+the consumed layers do and do not carry.
 
 ## Stage E — attribution
 
 1. The API layer queries USGS ComCat (±1 day around the acquisition window,
    footprint bbox + 0.5°, M ≥ 4) and filters events to those strictly
    inside the window and within 400 km.
-2. If an event with a published nodal plane exists, an Okada85 forward
+2. **Event selection is explicit (2026-10-21):** in-window candidates are
+   ranked by magnitude (descending), then distance to the footprint centroid
+   (ascending), then moment-tensor availability. The selected event, the
+   alternatives and the exclusion reasons travel with every result
+   (`attribution.eventSelection`); the first API result is never assumed to
+   be the most relevant.
+3. If an event with a published nodal plane exists, an Okada85 forward
    model is evaluated on the dataset grid (uniform slip; fault dimensions
    from Wells & Coppersmith 1994 area scaling with 2:1 aspect; moment from
-   Hanks & Kanamori 1979; slip = M0/(μA)) and compared with the
-   measurement: amplitude ratio and Pearson pattern correlation. The
+   Hanks & Kanamori 1979; slip = M0/(μA)) — **anchored at the epicentre
+   projected into the raster's own CRS** (docs/science.md §7.1) — and
+   compared with the measurement: amplitude ratio and Pearson pattern
+   correlation. The
    model field is evaluated on a deterministic strided subgrid of at most
    ~400k points (the Okada field is smooth at grid scale; full NISAR
    frames reach ~2×10⁷ pixels and need not be evaluated exhaustively),
    and peaks are computed with explicit loops — never `Math.max(...arr)`
    argument spreads, which overflow on large arrays.
-3. Hypotheses (coseismic, slow surface motion, atmospheric residual,
-   unwrapping artefact, no-change) receive evidence-linked statuses; the
-   thresholds (amplitude ratio within factor 3; r > 0.25) are documented as
-   coarse-screen conventions.
-4. The method note is always displayed, including the statement that the
+4. Hypotheses (coseismic, slow surface motion, atmospheric residual,
+   unwrapping artefact, no-change-above-threshold) receive evidence-linked
+   statuses; the screening values (amplitude ratio within a factor of 3;
+   r > 0.25; the ~30 mm atmospheric-plausibility value) are **exploratory
+   conventions, not calibrated statistics** — the values and their rationale
+   are attached to every result (`attribution.heuristics`). Consistency is
+   never described as causation; "no change above threshold" never becomes
+   "no change"; a single unwrapping component is never treated as proof of
+   artefact absence.
+5. The method note is always displayed, including the statement that the
    layer is not a calibrated classifier.
 
 ## Synthetic validation comparison

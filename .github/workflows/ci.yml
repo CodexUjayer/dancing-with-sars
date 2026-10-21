@@ -1,0 +1,54 @@
+name: CI
+
+# Continuous integration for MOTUS.
+#
+# Design constraints:
+#   - NO private credentials and NO untracked real-data files are required:
+#     every job below runs on a clean checkout with only the committed
+#     repository content. The scientific datasets that live outside git
+#     (large HDF5 granules, derived rasters) are OPTIONAL: the offline test
+#     suite verifies clean-clone behaviour explicitly, and data-dependent
+#     tests skip themselves with a visible message when the local data is
+#     absent.
+#   - The production build runs with TypeScript build errors ENABLED
+#     (next.config.ts no longer sets ignoreBuildErrors).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Type check (strict, no ignoreBuildErrors)
+        run: bun run typecheck
+
+      - name: Offline test suite (no credentials, no real-data files)
+        run: bun test
+        env:
+          DATABASE_URL: "file:./db/custom.db"
+
+      - name: Python extractor tests (offline synthetic HDF5 fixtures)
+        run: |
+          python3 -m pip install --quiet h5py numpy
+          python3 tools/test_extract_gunw.py
+
+      - name: Production build (TypeScript errors fail the build)
+        run: bun run build
+        env:
+          DATABASE_URL: "file:./db/custom.db"

@@ -286,8 +286,8 @@ export default function Home() {
           </div>
         </section>
 
-        <div className="grid gap-6 lg:grid-cols-[1.85fr_1fr]">
-          <div>
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[minmax(0,1.85fr)_minmax(0,1fr)]">
+          <div className="min-w-0">
             {detail ? (
               <MapPanel
                 key={detail.id}

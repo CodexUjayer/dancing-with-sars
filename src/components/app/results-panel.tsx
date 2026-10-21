@@ -46,9 +46,15 @@ export function QuantitativeResults({ result }: { result: AnalysisResult & { run
         {fm && (
           <div className="mt-3 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3">
             <MicroLabel>Forward-model check (Okada 1985 · USGS mechanism)</MicroLabel>
-            <div className="mt-1.5 font-mono text-[12px] tabular-nums text-[#4A443C]">
-              amplitude ratio {fm.amplitudeRatio.toFixed(2)} · pattern correlation r = {fm.patternCorrelation.toFixed(2)} · predicted peak {fmtMm(fm.predictedPeakM, 0)} vs measured {fmtMm(fm.measuredPeakM, 0)}
-            </div>
+            {fm.skipped ? (
+              <p className="mt-1.5 text-[12px] leading-4 text-[#6F6862]">
+                Skipped: {fm.skipReason}. No fault geometry was invented.
+              </p>
+            ) : (
+              <div className="mt-1.5 font-mono text-[12px] tabular-nums text-[#4A443C]">
+                amplitude ratio {fm.amplitudeRatio.toFixed(2)} · pattern correlation r = {fm.patternCorrelation.toFixed(2)} · predicted peak {fmtMm(fm.predictedPeakM, 0)} vs measured {fmtMm(fm.measuredPeakM, 0)}
+              </div>
+            )}
             <p className="mt-1.5 text-[11px] leading-4 text-[#8A837B]">{fm.note}</p>
           </div>
         )}
@@ -58,12 +64,34 @@ export function QuantitativeResults({ result }: { result: AnalysisResult & { run
       <section aria-labelledby="reliability">
         <h2 id="reliability" className="text-[15px] font-semibold text-[#1C1A17]">How reliable is this result?</h2>
         <p className="mt-1.5 text-[13px] leading-5 text-[#4A443C]">{result.narrative.reliability}</p>
-        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3.5">
+        <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3.5 sm:grid-cols-3">
           <Stat label="Valid fraction" value={`${(s.validFraction * 100).toFixed(0)}%`} />
+          <Stat label="Masked pixels" value={s.maskedPixelCount.toLocaleString()} />
           <Stat label="Reference scatter (σ)" value={fmtMm(s.referenceSigmaM)} />
+          <Stat label="Detected pixels" value={s.detectedPixelCount.toLocaleString()} />
+          <Stat label="Detected clusters ≥ 4 px" value={String(s.clusters.count)} />
+          <Stat label="Largest cluster" value={s.clusters.largestKm2 > 0 ? `${s.clusters.largestKm2.toFixed(1)} km²` : '—'} />
           <Stat label="Unwrap components" value={String(s.connectedComponentCount)} />
-          <Stat label="Iono systematic floor" value={s.systematicIonoFloorM > 0 ? fmtMm(s.systematicIonoFloorM) : 'n/a'} />
+          <Stat label="Iono floor" value={s.systematicIonoFloorM > 0 ? fmtMm(s.systematicIonoFloorM) : 'n/a'} />
+          <Stat label="Median threshold" value={fmtMm(s.thresholdMedianM)} />
         </div>
+        <div className="mt-2.5 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3">
+          <MicroLabel>What the corrections do and do not cover</MicroLabel>
+          <p className="mt-1 text-[11px] leading-4 text-[#6F6862]">{s.correctionStatus.note}</p>
+        </div>
+        {s.nullScreen.scenes > 0 && (
+          <div className="mt-2.5 rounded-lg border border-[#EFEAE2] bg-[#FDFCF9] p-3">
+            <MicroLabel>Null-scene screen (exploratory)</MicroLabel>
+            <p className="mt-1 text-[11px] leading-4 text-[#6F6862]">
+              {s.nullScreen.scenes} simulated no-change scenes with spatially correlated noise
+              (correlation length {s.nullScreen.correlationLengthPx} px, deterministic seeds) produced a
+              mean false-exceedance fraction of {(s.nullScreen.detectedFractionMean * 100).toFixed(2)}%
+              (worst scene {(s.nullScreen.detectedFractionMax * 100).toFixed(2)}%;{' '}
+              {s.nullScreen.scenesWithClusters} of {s.nullScreen.scenes} scenes formed ≥ 4-pixel clusters).
+              {' '}{s.nullScreen.note}
+            </p>
+          </div>
+        )}
       </section>
 
       {v && (
